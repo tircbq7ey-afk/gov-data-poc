@@ -1,0 +1,17 @@
+﻿# secrets / env
+.env
+.env.*
+.venv/
+venv/
+__pycache__/
+*.pyc
+logs/
+data/db/*
+*.parquet
+dist/
+
+# secrets
+visa-subs-*.json
+
+# secrets
+visa-subs-*.json

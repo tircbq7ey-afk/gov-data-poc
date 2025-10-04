@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>gov-data-poc</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;padding:24px;background:#fafafa;color:#222}
+    h1{font-size:22px;margin:0 0 16px}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    input[type="text"],input[type="number"]{height:32px;padding:0 8px;border:1px solid #ddd;border-radius:6px;background:#fff}
+    button{height:32px;padding:0 12px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer}
+    .card{background:#fff;border:1px solid #eee;border-radius:10px;padding:12px;margin:10px 0}
+    .muted{color:#666;font-size:12px}
+    .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #eee;border-radius:999px;padding:4px 8px;background:#fff}
+    .answer{font-size:16px;line-height:1.7}
+    .source a{color:#246;word-break:break-all}
+    .grid{display:grid;gap:10px}
+  </style>
+</head>
+<body>
+<h1>gov-data-poc</h1>
+
+<div class="row" style="justify-content:flex-end;margin-bottom:6px">
+  <span>API Key</span>
+  <input id="apiKey" type="text" style="width:280px" placeholder="changeme-local-token" />
+  <button id="saveKey">保存</button>
+</div>
+
+<div class="row" style="margin-bottom:10px">
+  <input id="q" type="text" style="flex:1;min-width:280px" placeholder="就労ビザに必要な書類は" />
+  <button id="btnSearch">search</button>
+  <button id="btnAsk">ask</button>
+</div>
+
+<div class="row card muted" style="gap:16px">
+  <div>top_k <input id="top_k" type="number" value="8" style="width:70px"></div>
+  <div>min_score <input id="min_score" type="number" step="0.01" value="0" style="width:90px"></div>
+  <div>bm25_top_n <input id="bm25_top_n" type="number" value="15" style="width:90px"></div>
+  <div>w_bm25 <input id="w_bm25" type="number" step="0.01" value="0.9" style="width:90px"></div>
+  <div>w_vec <input id="w_vec" type="number" step="0.01" value="0.85" style="width:90px"></div>
+</div>
+
+<div class="card">
+  <div class="muted" style="margin-bottom:6px">Answer</div>
+  <div id="answer" class="answer"></div>
+  <div class="row" style="margin-top:8px;gap:8px">
+    <button id="btnGood" class="pill">👍 良かった</button>
+    <button id="btnBad" class="pill">🔧 改善が必要</button>
+    <span id="fbMsg" class="muted"></span>
+  </div>
+</div>
+
+<div id="results" class="grid"></div>
+
+<div class="card" style="margin-top:20px">
+  <div class="muted" style="margin-bottom:6px">CSV バッチ質問</div>
+  <div class="muted">q 列を含む CSV を選んで「実行」。完了すると answers.csv を自動ダウンロードします。</div>
+  <div class="row" style="margin-top:8px">
+    <input id="csvFile" type="file" accept=".csv" />
+    <button id="btnCsv">実行</button>
+    <span class="muted">エンドポイント: POST /batch-ask</span>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const getToken = () => localStorage.getItem('apiKey') || 'changeme-local-token';
+
+// ★ 同一オリジン(8080)配下にプロキシしているので空文字でOK
+const base = () => '';
+
+$('apiKey').value = getToken();
+$('saveKey').onclick = () => {
+  localStorage.setItem('apiKey', $('apiKey').value.trim());
+  alert('保存しました');
+};
+
+function params () {
+  const p = new URLSearchParams({
+    top_k: $('top_k').value || '8',
+    min_score: $('min_score').value || '0',
+    bm25_top_n: $('bm25_top_n').value || '15',
+    w_bm25: $('w_bm25').value || '0.9',
+    w_vec: $('w_vec').value || '0.85',
+  });
+  return p.toString();
+}
+
+function showAnswer(text) { $('answer').textContent = text || ''; }
+function showResults(items) {
+  const box = $('results');
+  box.innerHTML = '';
+  (items || []).forEach(r => {
+    const d = document.createElement('div');
+    d.className = 'card';
+    d.innerHTML = `
+      <div class="muted">score=${(r.score ?? 0).toFixed(3)}</div>
+      <div>${r.text || ''}</div>
+      <div class="muted">source: <a href="${r.source_url}" target="_blank">${r.source_url}</a></div>
+    `;
+    box.appendChild(d);
+  });
+}
+
+async function doFetch(path) {
+  const q = $('q').value.trim();
+  if (!q) { alert('検索文を入力してください'); return; }
+  showAnswer('読み込み中...');
+  const url = `${base()}${path}?q=${encodeURIComponent(q)}&${params()}`;
+  const res = await fetch(url, { headers: { 'x-api-key': getToken() }});
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    showAnswer('エラーが発生しました');
+    console.error('API error:', data);
+    return;
+  }
+  showAnswer(data.answer || '');
+  showResults(data.results);
+}
+
+$('btnSearch').onclick = () => doFetch('/search');
+$('btnAsk').onclick    = () => doFetch('/ask');
+
+async function sendFeedback(kind) {
+  const q = $('q').value.trim();
+  const ans = $('answer').textContent || '';
+  const sources = Array.from(document.querySelectorAll('#results .card a')).map(a => a.href);
+
+  const payload = { q, answer: ans, label: kind, sources }; // 配列で送る
+  const res = await fetch(`${base()}/feedback`, {
+    method: 'POST',
+    headers: { 'x-api-key': getToken(), 'content-type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  $('fbMsg').textContent = res.ok ? 'フィードバックを記録しました' : '送信に失敗しました';
+}
+$('btnGood').onclick = () => sendFeedback('good');
+$('btnBad').onclick  = () => sendFeedback('needs_improvement');
+
+$('btnCsv').onclick = async () => {
+  const f = $('csvFile').files[0];
+  if (!f) { alert('CSV ファイルを選んでください'); return; }
+
+  const fd = new FormData();
+  fd.append('file', f, f.name); // backend 側引数名と一致
+
+  const url = `${base()}/batch-ask?${params()}`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'x-api-key': getToken() }, // Content-Type は付けない（multipart 自動）
+      body: fd
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(()=>'');
+      alert(`エラー: ${res.status}\n${t}`);
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'answers.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (e) {
+    console.error(e);
+    alert('アップロードに失敗しました');
+  }
+};
+</script>
+</body>
+</html>

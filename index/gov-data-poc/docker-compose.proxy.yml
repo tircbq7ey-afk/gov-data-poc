@@ -1,0 +1,17 @@
+services:
+  proxy:
+    image: nginx:1.25-alpine
+    container_name: gov-data-poc-proxy
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    # 注意: どちらも「ファイル→ファイル」でマウントします
+    volumes:
+      - ./index.html:/usr/share/nginx/html/static/index.html:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [gov_data_poc_net]
+
+networks:
+  gov_data_poc_net: {}

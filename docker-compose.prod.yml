@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+        BUILD_SHA: ${BUILD_SHA:-local}
+        BUILD_TIME: ${BUILD_TIME:-local}
+    image: ${APP_IMAGE:-ghcr.io/${GHCR_OWNER:-your_org}/gov-data-poc-app:${VERSION:-dev}}
+    env_file:
+      - .env
+    environment:
+      LOG_DIR: /app/logs                 # ← 非rootでも書ける
+    volumes:
+      - ./data:/data                     # ← FAQ/DB
+      - ./static:/app/static
+      - ./logs/app:/app/logs             # ← ログ
+    expose:
+      - "8010"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8010/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  proxy:
+    image: nginx:1.25-alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+      - "8010:8010"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./static:/usr/share/nginx/html:ro
+      - ./logs/nginx:/var/log/nginx
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+networks:
+  default:
+    name: gov-data-poc-net
