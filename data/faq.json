@@ -1,12 +1,13 @@
 [
-  {"q":"在留期限の更新はいつから申請できますか？","a":"通常は在留期限の3か月前から更新申請が可能です。混雑期を避け、必要書類を事前確認してください。","source":"https://www.moj.go.jp/isa/"},
-  {"q":"在留カードを紛失した場合はどうすればいいですか？","a":"最寄りの警察で遺失届を出し、入管で在留カード再交付申請を行います。申請時に遺失届受理番号等が必要です。","source":"https://www.moj.go.jp/isa/"},
-  {"q":"資格外活動許可は必要ですか？","a":"留学等で週28時間以内のアルバイトを行う場合は資格外活動許可が必要です。許可がない就労は違反です。","source":"https://www.moj.go.jp/isa/"},
-  {"q":"転職したときの手続きは？","a":"就労資格保持者は転職後14日以内に『契約機関に関する届出』が必要です。オンライン届出も可能です。","source":"https://www.moj.go.jp/isa/"},
-  {"q":"住所が変わったら？","a":"市区町村窓口で住居地の届出を行います。在留カードの裏面記載が更新されます。","source":"https://www.moj.go.jp/isa/"},
-  {"q":"配偶者ビザの必要書類は？","a":"婚姻関係を示す書類、収入や納税の資料、住居に関する資料などが一般的に必要です。個別に差があるため最新の案内を確認してください。","source":"https://www.moj.go.jp/isa/"},
-  {"q":"就労ビザで副業できますか？","a":"原則として在留資格の範囲外の就労はできません。必要に応じて資格外活動許可が必要です。","source":"https://www.moj.go.jp/isa/"},
-  {"q":"短期滞在から就労資格へ変更できますか？","a":"在留資格変更許可申請が必要です。要件を満たす雇用契約や学歴・職歴等が求められます。","source":"https://www.moj.go.jp/isa/"},
-  {"q":"在留カードの有効期限が切れたら？","a":"在留期限の経過は不法残留となり得ます。期限前に必ず更新申請をしてください。既に切れている場合は速やかに入管へ相談を。","source":"https://www.moj.go.jp/isa/"},
-  {"q":"留学生の就職活動に必要な在留期間の延長は？","a":"『特定活動（就職活動）』への変更または準備のための在留期間更新が必要な場合があります。学校の指導に従い手続きを進めてください。","source":"https://www.moj.go.jp/isa/"}
+  { "id": 1, "lang": "ja", "q": "パスポートの更新はどこでできますか？", "a": "最寄りの旅券センターまたは都道府県庁で申請可能です。住民票所在地の自治体サイトをご確認ください。" },
+  { "id": 2, "lang": "ja", "q": "マイナンバーカードの受け取り期限は？", "a": "交付通知書に記載の期限内に受け取りが必要です。通常は通知到達から約3か月です。" },
+  { "id": 3, "lang": "ja", "q": "住民票の写しはオンラインで取得できますか？", "a": "マイナポータルの『コンビニ交付』で取得可能です。対応自治体かをご確認ください。" },
+  { "id": 4, "lang": "ja", "q": "在留カードの更新時期は？", "a": "在留期限の2か月前から手続き可能です。出入国在留管理庁の案内に従ってください。" },
+  { "id": 5, "lang": "ja", "q": "戸籍謄本と抄本の違いは？", "a": "謄本は戸籍全員分、抄本は必要な人だけの記載です。" },
+
+  { "id": 6, "lang": "vi", "q": "Tôi có thể gia hạn hộ chiếu ở đâu?", "a": "Bạn có thể nộp hồ sơ tại Trung tâm Hộ chiếu gần nhất hoặc Ủy ban tỉnh/thành phố nơi cư trú." },
+  { "id": 7, "lang": "vi", "q": "Hạn nhận thẻ My Number là khi nào?", "a": "Thời hạn được ghi trong giấy thông báo. Thông thường khoảng 3 tháng kể từ khi nhận thông báo." },
+  { "id": 8, "lang": "vi", "q": "Có thể lấy bản sao sổ hộ khẩu (Juminhyo) online không?", "a": "Có thể lấy qua MyPortal mục 'Phát hành tại cửa hàng tiện lợi' nếu địa phương hỗ trợ." },
+  { "id": 9, "lang": "vi", "q": "Khi nào cần gia hạn thẻ cư trú?", "a": "Từ 2 tháng trước ngày hết hạn ghi trên thẻ. Hãy làm theo hướng dẫn của Cục Xuất nhập cảnh." },
+  { "id": 10, "lang": "vi", "q": "Sự khác nhau giữa bản sao Koteki tohon và shohon?", "a": "Tohon là bản ghi toàn bộ thành viên trong hộ tịch; shohon chỉ người được yêu cầu." }
 ]
