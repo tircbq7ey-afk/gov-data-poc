@@ -254,7 +254,7 @@ async def batch_ask(
 
         # FAQ first
         ans = ""; src = ""
-        for item in FAQ_DEFAULT:  # バッチは既定言語（必要ならlang列対応に拡張）
+        for item in FAQ_DEFAULT:  # バッチは既定言語
             if query == (item.get("q") or "") or (item.get("q") or "") in query or query in (item.get("q") or ""):
                 ans = item.get("a",""); src = item.get("source",""); break
         if ans:
