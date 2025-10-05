@@ -27,5 +27,5 @@ ENV VERSION=${VERSION} BUILD_SHA=${BUILD_SHA} BUILD_TIME=${BUILD_TIME}
 ENV PYTHONPATH=/app
 
 EXPOSE 8010
-# ← パッケージ記法に統一（最重要）
+# パッケージ記法に統一（最重要）
 CMD ["python","-m","uvicorn","app.qa_service:app","--host","0.0.0.0","--port","8010","--workers","1"]
