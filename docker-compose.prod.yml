@@ -1,7 +1,7 @@
 # docker-compose.prod.yml  ← UTF-8 (BOMなし) で保存
 services:
   app:
-    image: ${APP_IMAGE:-ghcr.io/${GHCR_OWNER:-tircbq7ey-afk}/gov-data-poc-app:${APP_TAG:-v0.1.3}}
+    image: ghcr.io/tircbq7ey-afk/gov-data-poc-app:latest
     container_name: gov-data-poc-app-1
     env_file: .env
     environment:
