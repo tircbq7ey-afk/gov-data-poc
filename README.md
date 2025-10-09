@@ -1,9 +1,6 @@
 # gov-data-poc
 
-自治体データ基盤のPoC向けシンプルQA API。  
-- Framework: FastAPI + Uvicorn
-- Nginx でリバースプロキシ（:8080→:8010）
-- FAQの初期データ `data/faq.json`
-- フィードバックは JSONL で `/data/feedback/*.jsonl` に追記
+FastAPI ベースの簡易 QA サービスです。FAQ(JSON) を読み込み、BM25 + TF-IDF のハイブリッド検索で回答します。  
+/ask, /feedback, /health を提供します。
 
 ## 構成
