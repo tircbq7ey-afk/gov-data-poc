@@ -1,10 +1,10 @@
 services:
   app:
-    # ローカルから必ずビルド（pull 不要）
+    # ←← これが重要：必ずローカルからビルド。pull しません
     build:
       context: .
       dockerfile: Dockerfile
-    # ビルドしたイメージに好きな名前を付けたい場合に備えて image も指定
+    # 好きな名前でイメージを付けたい場合のための image（pull はしない）
     image: ${APP_IMAGE:-ghcr.io/${GHCR_OWNER:-tircbq7ey-afk}/gov-data-poc-app}:${APP_TAG:-latest}
 
     container_name: gov-data-poc-app-1
@@ -15,7 +15,6 @@ services:
       API_TOKEN: ${API_TOKEN:-changeme-local-token}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_DIR: /app/logs
-      # コンテナ内の参照パスにマッピング
       TEXTS_JSON: /app/data/db/texts.json
       FAQ_JSON: /app/data/faq_vi.json
     volumes:
