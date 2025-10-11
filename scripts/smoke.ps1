@@ -1,39 +1,30 @@
-param(
-  [string]$BaseUrl = "http://127.0.0.1:8080",  # ← デフォルトはプロキシ 8080
+Param(
+  [string]$BaseUrl = "http://127.0.0.1:8080",
   [string]$EnvFile = ".env",
   [string]$Lang = "ja",
   [string]$Query = "パスポート更新の手続きは？"
 )
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+Write-Host "== Health check =="
+try {
+  curl.exe --get "$BaseUrl/health" | Out-Host
+} catch { Write-Error $_; }
 
-function Get-ApiTokenFromEnv($path) {
-  if (!(Test-Path $path)) { return "" }
-  $line = Get-Content -Raw -Encoding UTF8 $path |
-    Select-String 'API_TOKEN\s*=' -SimpleMatch | Select-Object -First 1
-  if ($null -eq $line) { return "" }
-  return ($line.ToString().Split('=')[1]).Trim()
-}
+# .env から API_TOKEN を読む
+$token = (Get-Content $EnvFile | Select-String '^API_TOKEN=').ToString().Split('=')[1].Trim()
 
-$TOKEN = Get-ApiTokenFromEnv $EnvFile
-$Headers = @{}
-if ($TOKEN -ne "") { $Headers["x-api-key"] = $TOKEN }
+Write-Host "== /ask =="
+$resp = curl.exe --get "$BaseUrl/ask" -H "x-api-key: $token" --data-urlencode "q=$Query" --data-urlencode "lang=$Lang"
+$resp | Out-Host
 
-Write-Host "== Health =="
-Invoke-RestMethod -Method Get -Uri "$BaseUrl/health" -Headers $Headers | Out-Host
-
-$qEsc = [uri]::EscapeDataString($Query)
-Write-Host "`n== Ask =="
-Invoke-RestMethod -Method Get -Uri "$BaseUrl/ask?q=$qEsc&lang=$Lang" -Headers $Headers | Out-Host
-
-Write-Host "`n== Feedback =="
+Write-Host "== /feedback =="
 $body = @{
-  q       = $Query
-  answer  = "ok"
-  label   = "good"
-  sources = @(@{source_id="manual"; score=1})
+  q = "test"
+  answer = "ok"
+  label = "good"
+  sources = @("https://example.com/a","/docs/b")
 } | ConvertTo-Json -Depth 5
-Invoke-RestMethod -Method Post -Uri "$BaseUrl/feedback" -Headers ($Headers + @{ "Content-Type"="application/json" }) -Body $body | Out-Host
 
-Write-Host "`nOK"
+Invoke-RestMethod -Method Post -Uri "$BaseUrl/feedback" `
+  -Headers @{ "x-api-key" = $token; "Content-Type"="application/json" } `
+  -Body $body | Out-Host
