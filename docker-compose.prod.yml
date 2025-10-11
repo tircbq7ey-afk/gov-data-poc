@@ -1,4 +1,4 @@
-# docker-compose.prod.yml  (UTF-8 / BOMなし)
+# docker-compose.prod.yml 〈UTF-8（BOMなし）〉
 services:
   app:
     image: ${APP_IMAGE:-ghcr.io/tircbq7ey-afk/gov-data-poc-app}:${APP_TAG:-latest}
@@ -7,33 +7,27 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8010
-      - API_TOKEN=${API_TOKEN:-change-me-local-token}
+      - API_TOKEN=${API_TOKEN:-changeme-local-token}
       - TEXTS_JSON=/app/data/db/texts.json
       - FAQ_JSON=/app/data/faq.json
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - FAQ_JSON_VI=/app/data/faq_vi.json
       - FEEDBACK_DIR=/data/feedback
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - VERSION=${APP_TAG:-latest}
     volumes:
       - ./data:/app/data
       - ./data/feedback:/data/feedback
       - ./logs:/app/logs
-    ports:
-      - "8080:8080"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
     restart: unless-stopped
 
   proxy:
-    image: nginx:1.27-alpine
+    image: caddy:2.8-alpine
     container_name: gov-data-poc-proxy-1
-    depends_on:
-      app:
-        condition: service_healthy
     ports:
-      - "8010:8010"
+      - "8080:8080"
     volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/default.conf:/etc/caddy/Caddyfile:ro
+      - ./logs:/var/log/caddy
+    depends_on:
+      - app
     restart: unless-stopped
