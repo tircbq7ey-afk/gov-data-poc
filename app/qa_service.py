@@ -9,11 +9,12 @@ from fastapi import (
     FastAPI, HTTPException, Query, Header, Request, Body
 )
 from fastapi.middleware.cors import CORSMiddleware
+    # noqa: E402
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# 検索関連（軽量ライブラリのみ）
+# 検索（軽量ライブラリ）
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
@@ -27,7 +28,7 @@ FEEDBACK_DIR = os.path.join(DATA_DIR, "feedback")
 
 FAQ_FILES = [
     os.path.join(DATA_DIR, "faq.json"),
-    os.path.join(DATA_DIR, "faq_vi.json"),  # 無ければ読み飛ばし
+    os.path.join(DATA_DIR, "faq_vi.json"),
 ]
 
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"), override=True)
@@ -53,7 +54,7 @@ class FaqItem(BaseModel):
     a: str
     lang: str = "ja"
     tags: Optional[List[str]] = None
-    id: Optional[str] = None  # 任意
+    id: Optional[str] = None
 
 def _read_json(path: str) -> Optional[List[Dict[str, Any]]]:
     if not os.path.exists(path):
@@ -71,7 +72,6 @@ def load_faqs() -> List[FaqItem]:
             try:
                 item = FaqItem(**row)
             except Exception:
-                # フィールド名 q/a のみでも受け入れる
                 item = FaqItem(
                     q=row.get("q") or row.get("question", ""),
                     a=row.get("a") or row.get("answer", ""),
@@ -97,26 +97,16 @@ TFIDF = VEC.fit_transform(CORPUS) if CORPUS else None
 def search(query: str, lang: Optional[str] = None, k: int = 5) -> List[Dict[str, Any]]:
     if not CORPUS:
         return []
-
-    # BM25
     bm_scores = BM25.get_scores(query.split()) if BM25 else [0.0] * len(CORPUS)
-
-    # TF-IDF cosine
     tfidf_scores = (
         cosine_similarity(VEC.transform([query]), TFIDF).ravel().tolist()
         if TFIDF is not None else [0.0] * len(CORPUS)
     )
-
-    # ハイブリッド（重みは経験値：BM25 0.6, TF-IDF 0.4）
     scores = [0.6 * bm + 0.4 * tf for bm, tf in zip(bm_scores, tfidf_scores)]
-
-    # 言語優先（マッチ言語に +5%）
     if lang:
         for i, item in enumerate(FAQS):
             if item.lang == lang:
                 scores[i] *= 1.05
-
-    # 上位 k
     idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
     results = []
     for i in idx:
@@ -137,7 +127,6 @@ def search(query: str, lang: Optional[str] = None, k: int = 5) -> List[Dict[str,
 # ==========
 app = FastAPI(title="gov-data-poc QA Service", version="1.0.0", docs_url="/docs")
 
-# CORS（ローカル・本番ともに許容）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -146,7 +135,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 静的ファイル（/static）
 static_dir = os.path.join(BASE_DIR, "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -169,8 +157,9 @@ class FeedbackPayload(BaseModel):
 # 認証
 # ==========
 def require_token(x_api_key: Optional[str]):
+    # トークン未設定ならスキップ（ローカル検証用）
     if not API_TOKEN:
-        return  # トークン未設定ならスキップ（ローカル想定）
+        return
     if not x_api_key or x_api_key.strip() != API_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
 
@@ -184,7 +173,7 @@ def health():
 @app.get("/ask", response_model=AskResponse)
 def ask(
     q: str = Query(..., description="質問文"),
-    lang: str = Query(DEFAULT_LANG, description="クエリ言語（ja/en/vi など）"),
+    lang: str = Query(DEFAULT_LANG, description="クエリ言語"),
     x_api_key: Optional[str] = Header(None),
 ):
     require_token(x_api_key)
@@ -200,14 +189,13 @@ def feedback(
     request: Request = None,
     x_api_key: Optional[str] = Header(None),
 ):
-    # 収集だけは無認可でも通したい場合はコメントアウト
+    # 収集を無認可で許可したい場合は次行をコメントアウト
     require_token(x_api_key)
 
     label = (payload.label or "").lower()
     if label not in {"good", "bad", "comment", ""}:
         raise HTTPException(status_code=400, detail="invalid label")
 
-    # sources は短く
     sources_list: List[Any] = []
     if payload.sources:
         for s in payload.sources[:5]:
