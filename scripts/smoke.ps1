@@ -1,5 +1,5 @@
 param(
-  [string]$BaseUrl = "http://127.0.0.1:8080",
+  [string]$BaseUrl = "http://127.0.0.1:8080",  # ← デフォルトはプロキシ 8080
   [string]$EnvFile = ".env",
   [string]$Lang = "ja",
   [string]$Query = "パスポート更新の手続きは？"
