@@ -1,51 +1,37 @@
-﻿version: "3.9"
-
-name: gov-data-poc
-
-networks:
-  gov-data-poc-net:
-
-volumes:
-  app_logs:
-  app_data:
-
 services:
   app:
-    # GHCR 縺ｮ縺ゅ↑縺溘・繝代ャ繧ｱ繝ｼ繧ｸ蜷阪→繧ｿ繧ｰ縺ｫ鄂ｮ縺肴鋤縺域ｸ医∩
-    image: ghcr.io/tircbq7ey-afk/gov-data-poc-app:latest
-    restart: always
-    env_file: .env
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "${VERSION:-dev}"
+        BUILD_TIME: "${BUILD_TIME:-unknown}"
+        BUILD_SHA: "${BUILD_SHA:-unknown}"
+    image: "${APP_IMAGE:-gov-data-poc-app}:${APP_TAG:-local}"
+    environment:
+      - API_TOKEN=${API_TOKEN:-}
+      - VERSION=${VERSION:-dev}
+      - BUILD_TIME=${BUILD_TIME:-unknown}
+      - BUILD_SHA=${BUILD_SHA:-unknown}
     expose:
       - "8010"
-    volumes:
-      - app_logs:/var/log/app
-      - app_data:/data
-      # 繝ｭ繝ｼ繧ｫ繝ｫ縺ｮ data/ 繧剃ｸ弱∴繧句ｴ蜷医・荳九・2陦後ｒ菴ｿ縺・
-      # - ./data:/data
-      # - ./logs:/var/log/app
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8010/health || exit 1"]
-      interval: 30s
-      timeout: 3s
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8010/health"]
+      interval: 15s
+      timeout: 5s
       retries: 5
-    networks:
-      - gov-data-poc-net
 
   proxy:
-    image: ghcr.io/tircbq7ey-afk/gov-data-poc-app:latest
-    restart: always
+    image: "nginx:1.27"
     depends_on:
       app:
         condition: service_healthy
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "8080:80"
-    volumes:
-      - ./default.conf:/etc/nginx/conf.d/default.conf:ro
-      # /static 繧帝・菫｡縺励◆縺・ｴ蜷医・莉･荳九ｒ菴ｿ縺・
-      # - ./static:/usr/share/nginx/html:ro
-    networks:
-      - gov-data-poc-net
-
-
-
-
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
