@@ -12,7 +12,7 @@ volumes:
 services:
   app:
     # GHCR 縺ｮ縺ゅ↑縺溘・繝代ャ繧ｱ繝ｼ繧ｸ蜷阪→繧ｿ繧ｰ縺ｫ鄂ｮ縺肴鋤縺域ｸ医∩
-    image: ghcr.io/tircbq7ey-afk/gov-data-poc-app:v0.1.3
+    image: ghcr.io/tircbq7ey-afk/gov-data-poc-app:latest
     restart: always
     env_file: .env
     expose:
@@ -32,7 +32,7 @@ services:
       - gov-data-poc-net
 
   proxy:
-    image: nginx:stable
+    image: ghcr.io/tircbq7ey-afk/gov-data-poc-app:latest
     restart: always
     depends_on:
       app:
@@ -45,4 +45,7 @@ services:
       # - ./static:/usr/share/nginx/html:ro
     networks:
       - gov-data-poc-net
+
+
+
 
