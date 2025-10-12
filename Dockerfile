@@ -1,31 +1,27 @@
+# ---- base ----
 FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
 WORKDIR /app
 
-# tools + curl for healthcheck
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates build-essential && \
-    rm -rf /var/lib/apt/lists/*
+# 必要ならここに requirements.txt を置く
+# 例: COPY requirements.txt .
+# RUN pip install -r requirements.txt
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 先に作成＆権限
-RUN useradd -m appuser && mkdir -p /var/log/app /data && \
-    chown -R appuser:appuser /app /var/log/app /data
+# 依存が少ない前提で uvicorn/fastapi を直接入れる
+RUN pip install --no-cache-dir fastapi uvicorn
 
 # アプリ本体
-COPY . .
-USER appuser
+COPY ./qa_service.py /app/qa_service.py
 
-# ビルドメタ
-ARG VERSION=dev BUILD_SHA=unknown BUILD_TIME=unknown
-ENV VERSION=${VERSION} BUILD_SHA=${BUILD_SHA} BUILD_TIME=${BUILD_TIME}
-
-# ← これで /app が import ルートになる
-ENV PYTHONPATH=/app
-
+# 8010 を使う
 EXPOSE 8010
-# パッケージ記法に統一（最重要）
-CMD ["python","-m","uvicorn","app.qa_service:app","--host","0.0.0.0","--port","8010","--workers","1"]
+
+# ヘルスチェック用にcurl（任意）
+RUN apt-get update -y && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+# 起動
+CMD ["python", "-m", "uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
