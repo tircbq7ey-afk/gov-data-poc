@@ -39,5 +39,5 @@ services:
 '@
 Set-Content -LiteralPath "docker-compose.prod.yml" -Value $y -Encoding utf8 -NoNewline
 
-# 構文チェック（何も出なければOK）
+# YAML 構文チェック（何も出なければOK）
 docker compose -f docker-compose.prod.yml config > $null
