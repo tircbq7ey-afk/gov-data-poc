@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir fastapi uvicorn
 
 # アプリ本体
 COPY ./app/qa_service.py /app/qa_service.py
+COPY ./data /app/data
 
 # 8010 を使う
 EXPOSE 8010
