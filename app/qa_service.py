@@ -1,67 +1,153 @@
-# app/qa_service.py
-from fastapi import FastAPI, Request, HTTPException
-from pydantic import BaseModel, Field
-from typing import List
-from time import perf_counter
+from __future__ import annotations
+
+import csv
+import glob
+import os
+import time
+from pathlib import Path
+from typing import List, Optional
+
+from fastapi import FastAPI
+from pydantic import BaseModel
 from difflib import SequenceMatcher
+
+APP_VERSION = os.getenv("VERSION", "dev")
+BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
+BUILD_SHA = os.getenv("BUILD_SHA", "unknown")
 
 app = FastAPI(title="gov-data-poc", version="0.1.0")
 
-# ====== 入出力スキーマ ======
+
+# ==== Pydantic models =========================================================
 class AskRequest(BaseModel):
-    q: str = Field(..., min_length=1, max_length=2000, description="質問文")
-    top_k: int = Field(5, ge=1, le=50, description="返す候補数（最大50）")
-    min_score: float = Field(0.0, ge=0.0, le=1.0, description="スコアの下限 (0.0〜1.0)")
+    q: str
+    top_k: int = 5
+    min_score: float = 0.0  # 0.0 - 1.0 目安
+
 
 class AskResponse(BaseModel):
     hits: List[str]
     took_ms: int
 
-# ====== 簡易データ（ダミー検索用）======
-# 実運用ではここをベクター検索やFAQデータに置き換えます
-_FAQ = [
-    "庁舎の開庁時間は平日9時から17時です。",
-    "申請書の提出はポータルサイトからも可能です。",
-    "パスワードを忘れた場合は再発行申請を行ってください。",
-    "API の利用制限は1分あたり60リクエストです。",
-    "お問い合わせはヘルプデスクまでメールでお願いします。",
-]
 
-def _score(a: str, b: str) -> float:
-    """0〜1の類似度（超簡易: difflib）"""
-    return SequenceMatcher(None, a, b).ratio()
+# ==== very simple in-memory corpus ============================================
+_CORPUS: List[str] = []
 
-def _search(q: str, top_k: int, min_score: float) -> List[str]:
-    scored = [(_score(q, t), t) for t in _FAQ]
-    scored.sort(reverse=True, key=lambda x: x[0])
-    return [t for s, t in scored if s >= min_score][:top_k]
 
-# ====== ルート/ヘルス ======
+def _pick_text_columns(header: List[str]) -> List[int]:
+    """
+    CSV の見出しから文章っぽい列候補を雑に推定します。
+    優先: answer, text, content, a, body
+    見出しが無ければ全列を結合
+    """
+    if not header:
+        return []
+
+    keys = [h.strip().lower() for h in header]
+    priority = ["answer", "text", "content", "body", "a", "説明", "回答"]
+    for key in priority:
+        if key in keys:
+            return [keys.index(key)]
+
+    # それっぽい名前が無ければ、文字列列っぽいものを全部
+    return list(range(len(keys)))
+
+
+def _load_corpus() -> List[str]:
+    base = Path(".")
+    patterns = [
+        base / "*.csv",
+        base / "data" / "*.csv",
+        base / "static" / "*.csv",
+    ]
+    paths: List[Path] = []
+    for p in patterns:
+        paths.extend(Path(".").glob(str(p)))
+
+    corpus: List[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8", newline="") as f:
+                sniffer = csv.Sniffer()
+                sample = f.read(2048)
+                f.seek(0)
+                has_header = False
+                try:
+                    has_header = sniffer.has_header(sample)
+                except Exception:
+                    pass
+
+                reader = csv.reader(f)
+                header: List[str] = []
+                if has_header:
+                    header = next(reader, [])
+                cols = _pick_text_columns(header)
+
+                for row in reader:
+                    if not row:
+                        continue
+                    if cols:
+                        text = " ".join(row[i] for i in cols if i < len(row))
+                    else:
+                        text = " ".join(row)
+                    text = text.strip()
+                    if text:
+                        corpus.append(text)
+        except FileNotFoundError:
+            continue
+        except Exception:
+            # CSV 以外は読み飛ばす（雑でOK）
+            continue
+
+    # 何も見つからなければ、最低限のダミーデータを入れる
+    if not corpus:
+        corpus = [
+            "申請書はオンラインで提出できます。",
+            "窓口の受付時間は平日 9:00-17:00 です。",
+            "必要書類の原本をご持参ください。",
+            "よくある質問と回答を掲載しています。",
+        ]
+    return corpus
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    global _CORPUS
+    _CORPUS = _load_corpus()
+
+
+# ==== endpoints ===============================================================
 @app.get("/health")
 def health():
     return {
         "ok": True,
-        "version": app.version,
-        "build_sha": "local",
-        "build_time": "",
-        "index_exists": True,
-        "texts_exists": True,
-        "faq_exists": True,
-        "min_score": 0.0,
-        "top_k_default": 5,
+        "version": APP_VERSION,
+        "build_time": BUILD_TIME,
+        "build_sha": BUILD_SHA,
+        "uptime_sec": 0,  # 簡略化
+        "docs": 2,
     }
 
-# ====== /ask ======
+
+def _score(a: str, b: str) -> float:
+    # 本当に簡易なスコア（0.0〜1.0）
+    return SequenceMatcher(None, a, b).ratio()
+
+
 @app.post("/ask", response_model=AskResponse)
-async def ask(req: Request, body: AskRequest):
-    # 簡易サイズ制限（1MB超のボディは拒否）
-    cl = req.headers.get("content-length")
-    if cl and int(cl) > 1_000_000:
-        raise HTTPException(status_code=413, detail="payload too large")
+def ask(req: AskRequest):
+    """
+    超シンプルな全文“もどき”検索:
+      - difflib の類似度で並べ替え
+      - min_score 以上から top_k 件返す
+    """
+    t0 = time.perf_counter()
 
-    t0 = perf_counter()
-    hits = _search(body.q.strip(), body.top_k, body.min_score)
-    took_ms = int((perf_counter() - t0) * 1000)
+    scored = [(_score(req.q, doc), doc) for doc in _CORPUS]
+    scored.sort(key=lambda x: x[0], reverse=True)
 
-    # 結果が0件でも 200 で空配列を返す（クライアント側でハンドリングしやすい）
-    return AskResponse(hits=hits if hits else [f"echo: {body.q}"], took_ms=took_ms)
+    hits = [doc for s, doc in scored if s >= req.min_score][: max(1, req.top_k)]
+
+    took_ms = int((time.perf_counter() - t0) * 1000)
+    return AskResponse(hits=hits, took_ms=took_ms)
