@@ -1,162 +1,154 @@
-# app/qa_service.py
 from __future__ import annotations
-
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Body
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import List, Optional, Dict, Tuple
 from pathlib import Path
-from datetime import datetime, timezone
-from rapidfuzz import process, fuzz
+from datetime import datetime
 import csv
+import difflib
 import json
-import time
+import os
 
-APP_TITLE = "gov-data-poc"
-APP_VERSION = "dev"
+app = FastAPI(title="gov-data-poc", version="dev")
 
-app = FastAPI(title=APP_TITLE, version=APP_VERSION)
-_app_started = time.time()
-
-# ========= データ読み込み =========
-DATA_FILES = [Path("./answers.csv"), Path("./answers_A.csv")]
-CorpusItem = Dict[str, str]
-CORPUS: List[CorpusItem] = []
-QUERIES: List[str] = []  # 検索キーのみ
-
-def _read_csv(path: Path) -> List[CorpusItem]:
-    items: List[CorpusItem] = []
-    if not path.exists():
-        return items
-    # Windows でも安全に UTF-8 (BOM 可) で読む
-    with path.open("r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            q = (row.get("q") or "").strip()
-            a = (row.get("a") or "").strip()
-            src = (row.get("source") or row.get("src") or path.name).strip()
-            if q and a:
-                items.append({"q": q, "a": a, "source": src})
-    return items
-
-def load_corpus() -> None:
-    CORPUS.clear()
-    for p in DATA_FILES:
-        CORPUS.extend(_read_csv(p))
-    QUERIES[:] = [item["q"] for item in CORPUS]
-
-load_corpus()
-
-# ========= スキーマ =========
-class AskIn(BaseModel):
-    q: str
-    top_k: int = 3
-    min_score: float = 0.2
-    lang: Optional[str] = "ja"
-
+# =========
+# モデル
+# =========
 class AskResponse(BaseModel):
     q: str
     lang: str = "ja"
     answer: str
-    sources: List[Dict[str, str]] = []
+    sources: List[str] = []
 
 class FeedbackIn(BaseModel):
     q: str
     answer: str
     sources: List[str] = []
-    lang: Optional[str] = "ja"
+    lang: str = "ja"
 
-# ========= 検索ユーティリティ =========
-def search(q: str, top_k: int = 3, min_score: float = 0.2):
-    """
-    rapidfuzz のスコアは 0〜100 なので 0.0〜1.0 に正規化して min_score と比較。
-    """
-    if not QUERIES or not q.strip():
-        return []
 
-    # 語順の影響が小さくノイズに強い scorer
-    results = process.extract(
-        q, QUERIES, scorer=fuzz.token_set_ratio, limit=max(top_k, 10)
-    )
+# =========
+# 簡易インデックス
+# =========
+INDEX: List[Dict[str, str]] = []  # dict: {"q":..., "a":..., "source":...}
 
-    hits = []
-    for idx, score, _ in results:
-        norm = float(score) / 100.0
-        if norm >= min_score:
-            item = CORPUS[idx]
-            hits.append({
-                "idx": idx,
-                "score": norm,
-                "q": item["q"],
-                "a": item["a"],
-                "source": item["source"],
-            })
-        if len(hits) >= top_k:
-            break
-    return hits
+QUESTION_KEYS = ("q", "question", "query", "title")
+ANSWER_KEYS = ("a", "answer", "text", "content", "body", "value")
 
-def build_answer(q: str, lang: Optional[str], top_k: int, min_score: float) -> AskResponse:
-    hits = search(q, top_k=top_k, min_score=min_score)
-    if hits:
-        best = hits[0]
-        answer = best["a"]
-        sources = [{
-            "q": h["q"],
-            "score": round(h["score"], 3),
-            "source": h["source"]
-        } for h in hits]
-    else:
-        answer = "すみません。該当する回答を見つけられませんでした。"
-        sources = []
-    return AskResponse(q=q, lang=lang or "ja", answer=answer, sources=sources)
+def _detect_cols(header: List[str]) -> Tuple[Optional[str], Optional[str]]:
+    low = [h.strip().lower() for h in header]
+    q_col = next((h for h in low if h in QUESTION_KEYS), None)
+    a_col = next((h for h in low if h in ANSWER_KEYS), None)
+    return q_col, a_col
 
-# ========= エンドポイント =========
+def _load_csv(path: Path) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                return rows
+            # 列検出
+            q_col, a_col = _detect_cols(reader.fieldnames)
+            if q_col is None or a_col is None:
+                # 列名が想定外でも、先頭2列を q,a として試す
+                names = [h.strip() for h in reader.fieldnames]
+                if len(names) >= 2:
+                    q_col, a_col = names[0], names[1]
+                else:
+                    return rows
+            for i, rec in enumerate(reader, start=2):  # headerを1行目とみなす
+                q = (rec.get(q_col) or "").strip()
+                a = (rec.get(a_col) or "").strip()
+                if not q and not a:
+                    continue
+                src = f"{path.name}:L{i}"
+                rows.append({"q": q, "a": a, "source": src})
+    except FileNotFoundError:
+        pass
+    return rows
+
+def build_index() -> int:
+    global INDEX
+    INDEX = []
+    for p in sorted(Path(".").glob("answers*.csv")):
+        INDEX.extend(_load_csv(p))
+    return len(INDEX)
+
+def _score(query: str, row_q: str, row_a: str) -> float:
+    q = query.strip()
+    if not q:
+        return 0.0
+    # 部分一致を強く評価
+    low_q = q.lower()
+    rq = row_q.lower()
+    ra = row_a.lower()
+    if low_q in rq or low_q in ra:
+        return 1.0
+    # それ以外は類似度
+    sim_q = difflib.SequenceMatcher(None, q, row_q).ratio()
+    sim_a = difflib.SequenceMatcher(None, q, row_a).ratio()
+    return max(sim_q, sim_a)
+
+def search(query: str, top_k: int, min_score: float) -> List[Dict[str, str]]:
+    scored: List[Tuple[float, Dict[str, str]]] = []
+    for row in INDEX:
+        s = _score(query, row["q"], row["a"])
+        if s >= min_score:
+            scored.append((s, row))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in scored[: max(1, top_k)]]
+
+# =========
+# ルート
+# =========
 @app.get("/health")
 def health():
     return {
         "ok": True,
-        "version": APP_VERSION,
-        "build_time": "unknown",
-        "uptime_sec": round(time.time() - _app_started, 2),
+        "version": app.version,
+        "build_time": os.environ.get("BUILD_TIME", "unknown"),
+        "uptime_sec": float(os.environ.get("UPTIME_SEC", "0")) or 0.0,
     }
 
-@app.get("/", summary="Root")
-def root_get():
-    return {"ok": True, "message": "gov-data-poc API"}
+@app.get("/")
+def root():
+    return {"ok": True, "service": "app"}
 
-# ---- /ask (GET) ----
-@app.get("/ask", response_model=AskResponse, summary="Ask (GET)")
+@app.get("/ask", response_model=AskResponse, summary="Ask")
 def ask_get(
     q: str,
-    lang: Optional[str] = "ja",
     top_k: int = 3,
     min_score: float = 0.2,
-    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+    lang: Optional[str] = "ja",
 ):
-    return build_answer(q=q, lang=lang, top_k=top_k, min_score=min_score)
+    hits = search(q, top_k, min_score)
+    if not hits:
+        return AskResponse(q=q, lang=lang or "ja", answer="[ja] 該当が見つかりませんでした。", sources=[])
+    best = hits[0]
+    # 1件の代表回答 + 参照元一覧
+    return AskResponse(
+        q=q,
+        lang=lang or "ja",
+        answer=f"[ja] {best['a']}",
+        sources=[h["source"] for h in hits],
+    )
 
-# ---- /ask (POST) ----
-@app.post("/ask", response_model=AskResponse, summary="Ask (POST)")
-def ask_post(
-    body: AskIn,
-    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
-):
-    return build_answer(q=body.q, lang=body.lang, top_k=body.top_k, min_score=body.min_score)
-
-# ---- /feedback ----
 @app.post("/feedback", summary="Feedback")
-def feedback_post(
-    body: FeedbackIn,
-    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
-):
-    out_dir = Path("./data/feedback")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{datetime.now(timezone.utc):%Y%m%d}.jsonl"
-    with out_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(body.model_dump(), ensure_ascii=False) + "\n")
-    return {"ok": True, "path": str(out_path)}
+def feedback_feedback_post(payload: FeedbackIn = Body(...)):
+    Path("./data/feedback").mkdir(parents=True, exist_ok=True)
+    out = Path("./data/feedback") / f"{datetime.now():%Y%m%d}.jsonl"
+    rec = payload.dict()
+    with out.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return {"ok": True, "path": str(out)}
 
-# ---- （任意）再インデックス ----
-@app.post("/admin/reindex", summary="Reindex corpus")
+@app.post("/admin/reindex", summary="Rebuild in-memory index")
 def admin_reindex():
-    load_corpus()
-    return {"ok": True, "size": len(CORPUS)}
+    n = build_index()
+    return {"ok": True, "loaded_rows": n}
+
+# 起動時に読み込み
+@app.on_event("startup")
+def _on_startup():
+    build_index()
