@@ -1,29 +1,33 @@
 # syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
+# Python設定（キャッシュやバッファ無効化）
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# 作業ディレクトリ
 WORKDIR /app
 
-# ヘルスチェック用の curl だけ入れる（軽量）
+# ヘルスチェック用 curl だけインストール（軽量）
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 
-# 依存（最小）
+# FastAPI + Uvicorn のみ最小構成でインストール
 RUN pip install --no-cache-dir fastapi uvicorn
 
-# アプリ本体
-COPY ./app/qa_service.py /app/qa_service.py
+# 🔹 appフォルダ全体をコピー（qa_service.py 含む）
+COPY ./app /app
+
+# 🔹 データフォルダもコピー（CSVなど）
 COPY ./data /app/data
 
-# 8010 を使う
+# ポート指定（Uvicorn で使用）
 EXPOSE 8010
 
-# コンテナ内のヘルスチェック（FastAPI の /health）
+# コンテナのヘルスチェック（FastAPI /health エンドポイント）
 HEALTHCHECK --interval=15s --timeout=5s --retries=5 \
   CMD curl -fsS http://127.0.0.1:8010/health || exit 1
 
-# 🔴 これが無いとアプリが起動しません
+# アプリ実行コマンド
 CMD ["uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
