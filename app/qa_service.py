@@ -1,154 +1,240 @@
 from __future__ import annotations
-from fastapi import FastAPI, Body
-from pydantic import BaseModel
+from fastapi import FastAPI, Body, Header
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
-from datetime import datetime
-import csv
-import difflib
+import re
 import json
-import os
+import time
 
 app = FastAPI(title="gov-data-poc", version="dev")
 
-# =========
-# モデル
-# =========
+# ===== 検索用・超軽量インデックス（外部ライブラリなし） =====
+_DOCS: List[Dict] = []
+_INV: Dict[str, Dict[int, int]] = {}  # token -> {doc_id: tf}
+_IDF: Dict[str, float] = {}
+_TOKEN = re.compile(r"[A-Za-z0-9一-龠ぁ-んァ-ンー]+")
+
+def _tokenize(text: str) -> List[str]:
+    return [t.lower() for t in _TOKEN.findall(text)]
+
+def _build_index(docs: List[Dict[str, str]]) -> None:
+    global _DOCS, _INV, _IDF
+    _DOCS = []
+    _INV = {}
+    for i, d in enumerate(docs):
+        text = f"{d.get('q','')} {d.get('a','')}"
+        toks = _tokenize(text)
+        _DOCS.append({"id": i, "q": d.get("q",""), "a": d.get("a",""), "path": d.get("path","")})
+        seen = {}
+        for tok in toks:
+            seen[tok] = seen.get(tok, 0) + 1
+        for tok, tf in seen.items():
+            _INV.setdefault(tok, {})[i] = tf
+
+    # IDF（ゆるい計算）
+    N = max(1, len(_DOCS))
+    _IDF = {}
+    for tok, postings in _INV.items():
+        df = len(postings)
+        _IDF[tok] = max(0.0, ( (N - df + 0.5) / (df + 0.5) ))
+
+def _score_query(q: str) -> List[Tuple[int, float]]:
+    if not _DOCS:
+        return []
+    q_toks = _tokenize(q)
+    cand: Dict[int, float] = {}
+    for tok in q_toks:
+        postings = _INV.get(tok)
+        if not postings:
+            continue
+        idf = _IDF.get(tok, 0.0)
+        for doc_id, tf in postings.items():
+            cand[doc_id] = cand.get(doc_id, 0.0) + idf * (1.0 + tf)
+    # スコア降順
+    return sorted(cand.items(), key=lambda x: x[1], reverse=True)
+
+def _lazy_bootstrap_index():
+    # まだインデックスが無ければ ./data / ルートCSVから作る
+    if _DOCS:
+        return
+    sources: List[Dict[str, str]] = []
+
+    # 1) ./data 以下の .csv / .md / .txt
+    data_dir = Path("./data")
+    if data_dir.exists():
+        for p in data_dir.rglob("*"):
+            if p.suffix.lower() == ".csv":
+                try:
+                    import csv
+                    with p.open("r", encoding="utf-8", newline="") as f:
+                        rdr = csv.DictReader(f)
+                        for row in rdr:
+                            q = row.get("q") or row.get("question") or ""
+                            a = row.get("a") or row.get("answer") or ""
+                            if q or a:
+                                sources.append({"q": q, "a": a, "path": str(p)})
+                except Exception:
+                    pass
+            elif p.suffix.lower() in {".md", ".txt"}:
+                try:
+                    text = p.read_text(encoding="utf-8", errors="ignore")
+                    # 1行目を「q」、残りを「a」扱い（サンプル）
+                    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+                    if lines:
+                        q = lines[0]
+                        a = "\n".join(lines[1:]) if len(lines) > 1 else lines[0]
+                        sources.append({"q": q, "a": a, "path": str(p)})
+                except Exception:
+                    pass
+
+    # 2) リポジトリ直下の CSV（answers.csv 等）
+    for p in Path(".").glob("answers*.csv"):
+        try:
+            import csv
+            with p.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for row in rdr:
+                    q = row.get("q") or row.get("question") or ""
+                    a = row.get("a") or row.get("answer") or ""
+                    if q or a:
+                        sources.append({"q": q, "a": a, "path": str(p)})
+        except Exception:
+            pass
+
+    if not sources:
+        # ソースがなければダミー1件
+        sources = [{"q": "ダミーの質問", "a": "ダミーの回答。/admin/reindex で実データを読み込めます。", "path": "memory"}]
+
+    _build_index(sources)
+
+def _search(q: str, top_k: int, min_score: float):
+    _lazy_bootstrap_index()
+    started = time.time()
+    ranked = _score_query(q)
+    hits = []
+    for doc_id, score in ranked[: max(1, top_k * 3)]:
+        if score < min_score:
+            continue
+        d = _DOCS[doc_id]
+        snippet = (d["a"] or d["q"])[:120]
+        hits.append({
+            "loc": d["path"],
+            "score": round(float(score), 3),
+            "snippet": snippet
+        })
+    took = int((time.time() - started) * 1000)
+    # 回答（とりあえず上位1件の回答を返す）
+    answer = _DOCS[ranked[0][0]]["a"] if ranked else ""
+    return answer, hits, took
+
+# ====== I/O モデル ======
 class AskResponse(BaseModel):
     q: str
     lang: str = "ja"
     answer: str
-    sources: List[str] = []
+    sources: List[Dict[str, str]] = Field(default_factory=list)
+
+class AskIn(BaseModel):
+    q: str
+    top_k: int = 5
+    min_score: float = 0.0
 
 class FeedbackIn(BaseModel):
     q: str
     answer: str
-    sources: List[str] = []
-    lang: str = "ja"
+    sources: List[str] = Field(default_factory=list)
+    lang: Optional[str] = None
 
-
-# =========
-# 簡易インデックス
-# =========
-INDEX: List[Dict[str, str]] = []  # dict: {"q":..., "a":..., "source":...}
-
-QUESTION_KEYS = ("q", "question", "query", "title")
-ANSWER_KEYS = ("a", "answer", "text", "content", "body", "value")
-
-def _detect_cols(header: List[str]) -> Tuple[Optional[str], Optional[str]]:
-    low = [h.strip().lower() for h in header]
-    q_col = next((h for h in low if h in QUESTION_KEYS), None)
-    a_col = next((h for h in low if h in ANSWER_KEYS), None)
-    return q_col, a_col
-
-def _load_csv(path: Path) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
-    try:
-        with path.open("r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                return rows
-            # 列検出
-            q_col, a_col = _detect_cols(reader.fieldnames)
-            if q_col is None or a_col is None:
-                # 列名が想定外でも、先頭2列を q,a として試す
-                names = [h.strip() for h in reader.fieldnames]
-                if len(names) >= 2:
-                    q_col, a_col = names[0], names[1]
-                else:
-                    return rows
-            for i, rec in enumerate(reader, start=2):  # headerを1行目とみなす
-                q = (rec.get(q_col) or "").strip()
-                a = (rec.get(a_col) or "").strip()
-                if not q and not a:
-                    continue
-                src = f"{path.name}:L{i}"
-                rows.append({"q": q, "a": a, "source": src})
-    except FileNotFoundError:
-        pass
-    return rows
-
-def build_index() -> int:
-    global INDEX
-    INDEX = []
-    for p in sorted(Path(".").glob("answers*.csv")):
-        INDEX.extend(_load_csv(p))
-    return len(INDEX)
-
-def _score(query: str, row_q: str, row_a: str) -> float:
-    q = query.strip()
-    if not q:
-        return 0.0
-    # 部分一致を強く評価
-    low_q = q.lower()
-    rq = row_q.lower()
-    ra = row_a.lower()
-    if low_q in rq or low_q in ra:
-        return 1.0
-    # それ以外は類似度
-    sim_q = difflib.SequenceMatcher(None, q, row_q).ratio()
-    sim_a = difflib.SequenceMatcher(None, q, row_a).ratio()
-    return max(sim_q, sim_a)
-
-def search(query: str, top_k: int, min_score: float) -> List[Dict[str, str]]:
-    scored: List[Tuple[float, Dict[str, str]]] = []
-    for row in INDEX:
-        s = _score(query, row["q"], row["a"])
-        if s >= min_score:
-            scored.append((s, row))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [r for _, r in scored[: max(1, top_k)]]
-
-# =========
-# ルート
-# =========
+# ====== ヘルス ======
 @app.get("/health")
 def health():
-    return {
-        "ok": True,
-        "version": app.version,
-        "build_time": os.environ.get("BUILD_TIME", "unknown"),
-        "uptime_sec": float(os.environ.get("UPTIME_SEC", "0")) or 0.0,
-    }
+    return {"ok": True, "version": app.version, "build_time": "unknown", "uptime_sec": 0}
 
-@app.get("/")
-def root():
-    return {"ok": True, "service": "app"}
-
+# ====== Ask（GET） ======
 @app.get("/ask", response_model=AskResponse, summary="Ask")
 def ask_get(
     q: str,
-    top_k: int = 3,
-    min_score: float = 0.2,
     lang: Optional[str] = "ja",
+    top_k: int = 5,
+    min_score: float = 0.0,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key")
 ):
-    hits = search(q, top_k, min_score)
-    if not hits:
-        return AskResponse(q=q, lang=lang or "ja", answer="[ja] 該当が見つかりませんでした。", sources=[])
-    best = hits[0]
-    # 1件の代表回答 + 参照元一覧
-    return AskResponse(
-        q=q,
-        lang=lang or "ja",
-        answer=f"[ja] {best['a']}",
-        sources=[h["source"] for h in hits],
-    )
+    answer, hits, _ = _search(q, top_k, min_score)
+    return AskResponse(q=q, lang=lang or "ja", answer=answer, sources=hits)
 
+# ====== Ask（POST） ======
+@app.post("/ask", response_model=AskResponse, summary="Ask (POST)")
+def ask_post(
+    body: AskIn,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key")
+):
+    answer, hits, _ = _search(body.q, body.top_k, body.min_score)
+    return AskResponse(q=body.q, lang="ja", answer=answer, sources=hits)
+
+# ====== Feedback ======
 @app.post("/feedback", summary="Feedback")
-def feedback_feedback_post(payload: FeedbackIn = Body(...)):
-    Path("./data/feedback").mkdir(parents=True, exist_ok=True)
-    out = Path("./data/feedback") / f"{datetime.now():%Y%m%d}.jsonl"
-    rec = payload.dict()
-    with out.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    return {"ok": True, "path": str(out)}
+def feedback(
+    fb: FeedbackIn,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key")
+):
+    out_dir = Path("./data/feedback")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fname = time.strftime("%Y%m%d") + ".jsonl"
+    path = out_dir / fname
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(fb.dict(), ensure_ascii=False) + "\n")
+    return {"ok": True, "path": str(path)}
 
-@app.post("/admin/reindex", summary="Rebuild in-memory index")
-def admin_reindex():
-    n = build_index()
-    return {"ok": True, "loaded_rows": n}
+# ====== Reindex（実データ読込） ======
+@app.post("/admin/reindex", summary="Reindex data directory")
+def admin_reindex(
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key")
+):
+    started = time.time()
+    # ./data と answers*.csv を再走査
+    sources: List[Dict[str, str]] = []
+    data_dir = Path("./data")
+    if data_dir.exists():
+        for p in data_dir.rglob("*"):
+            if p.suffix.lower() == ".csv":
+                try:
+                    import csv
+                    with p.open("r", encoding="utf-8", newline="") as f:
+                        rdr = csv.DictReader(f)
+                        for row in rdr:
+                            q = row.get("q") or row.get("question") or ""
+                            a = row.get("a") or row.get("answer") or ""
+                            if q or a:
+                                sources.append({"q": q, "a": a, "path": str(p)})
+                except Exception:
+                    pass
+            elif p.suffix.lower() in {".md", ".txt"}:
+                try:
+                    text = p.read_text(encoding="utf-8", errors="ignore")
+                    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+                    if lines:
+                        q = lines[0]
+                        a = "\n".join(lines[1:]) if len(lines) > 1 else lines[0]
+                        sources.append({"q": q, "a": a, "path": str(p)})
+                except Exception:
+                    pass
+    for p in Path(".").glob("answers*.csv"):
+        try:
+            import csv
+            with p.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for row in rdr:
+                    q = row.get("q") or row.get("question") or ""
+                    a = row.get("a") or row.get("answer") or ""
+                    if q or a:
+                        sources.append({"q": q, "a": a, "path": str(p)})
+        except Exception:
+            pass
 
-# 起動時に読み込み
-@app.on_event("startup")
-def _on_startup():
-    build_index()
+    if not sources:
+        sources = [{"q": "ダミーの質問", "a": "ダミーの回答", "path": "memory"}]
+
+    _build_index(sources)
+    took = int((time.time() - started) * 1000)
+    return {"ok": True, "docs": len(_DOCS), "took_ms": took}
