@@ -10,15 +10,14 @@ services:
       - "8010"
     environment:
       - TZ=Asia/Tokyo
-    # ★ bind mount を確実に効かせる
-    #   Windows/PowerShell でも確実に解決されるよう ${PWD} を使います
     volumes:
-      - ${PWD}/data:/app/data
+      # ← コンテナ内 /app/data にホストの ./data をマウント
+      - ./data:/app/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8010/health || exit 1"]
       interval: 10s
       timeout: 3s
-      retries: 12
+      retries: 5
     restart: unless-stopped
 
   proxy:
@@ -28,11 +27,7 @@ services:
         condition: service_healthy
     ports:
       - "8080:80"
+    # ← ここがポイント：nginx.conf をメイン設定として差し替える
     volumes:
-      # ★ /admin/ も通す nginx 設定をマウント
-      - ${PWD}/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     restart: unless-stopped
-
-networks:
-  default:
-    name: gov-data-poc_default
