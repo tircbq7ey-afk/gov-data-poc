@@ -4,6 +4,7 @@ services:
   app:
     build:
       context: .
+      dockerfile: Dockerfile
     image: gov-data-poc-app:local
     command: ["python", "-m", "uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
     expose:
@@ -11,23 +12,25 @@ services:
     environment:
       - TZ=Asia/Tokyo
     volumes:
-      # ← コンテナ内 /app/data にホストの ./data をマウント
+      # ← ここで /app/data がホスト ./data と双方向でつながる
       - ./data:/app/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8010/health || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
-    restart: unless-stopped
 
   proxy:
     image: nginx:1.27
     depends_on:
       app:
         condition: service_healthy
-    ports:
-      - "8080:80"
-    # ← ここがポイント：nginx.conf をメイン設定として差し替える
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    restart: unless-stopped
+    ports:
+      - "8080:80"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
