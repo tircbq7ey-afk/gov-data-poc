@@ -157,7 +157,7 @@ class AskOut(BaseModel):
     q: str
     lang: str = "ja"
     answer: str = ""
-    sources: List[Dict[str, Any]] = []
+    sources: list = []
 
 class FeedbackIn(BaseModel):
     q: str
