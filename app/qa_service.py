@@ -95,7 +95,6 @@ def build_tfidf_index() -> Dict[str, Any]:
     Scikit-learn の TF-IDF ベクトル化で全文検索用の疎行列を作成。
     """
     from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS as EN_STOP
 
     records = _yield_raw_records()
     if not records:
@@ -177,19 +176,18 @@ class ReindexOut(BaseModel):
 def health():
     return {"ok": True, "version": "dev", "build_time": "unknown"}
 
-# ------ Ask: GET（既存） ------
+# ------ Ask: GET ------
 @app.get("/ask", response_model=AskOut, summary="Ask")
 def ask_get(
     q: str = Query(..., title="Q"),
     lang: str = Query("ja", title="Lang"),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
-    # 検索
     results = search_tfidf(q, top_k=3, min_score=0.2)
-    answer = ""  # <- ここは生成要約を後で差し替え可能。今は空で返す。
+    answer = ""  # 生成要約などは今後拡張
     return AskOut(q=q, lang=lang, answer=answer, sources=results)
 
-# ------ Ask: POST（新規） ------
+# ------ Ask: POST（★追加） ------
 @app.post("/ask", response_model=AskOut, summary="Ask (POST)")
 def ask_post(
     payload: AskIn,
@@ -199,17 +197,18 @@ def ask_post(
     answer = ""  # 将来的にRAG応答へ拡張
     return AskOut(q=payload.q, lang=payload.lang, answer=answer, sources=results)
 
-# ------ Feedback: POST（既存） ------
+# ------ Feedback: POST ------
 @app.post("/feedback", response_model=FeedbackOut, summary="Feedback")
 def feedback_post(
     payload: FeedbackIn,
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-    fname = FEEDBACK_DIR / f"{Path.cwd().name}{Path.cwd().stat().st_mtime_ns}.jsonl"
-    # 日付名のほうが良ければ下行を使う:
+    # 日付名で書きたい場合はコメントを外してください
     # from datetime import datetime as _dt
     # fname = FEEDBACK_DIR / f"{_dt.utcnow().strftime('%Y%m%d')}.jsonl"
+    # ここではカレント名＋mtime を使って重複しにくく
+    fname = FEEDBACK_DIR / f"{Path.cwd().name}{Path.cwd().stat().st_mtime_ns}.jsonl"
 
     line = {
         "q": payload.q,
@@ -217,12 +216,11 @@ def feedback_post(
         "label": "good",
         "sources": payload.sources,
     }
-    # 追記
     with open(fname, "a", encoding="utf-8") as f:
         f.write(json.dumps(line, ensure_ascii=False) + "\n")
     return FeedbackOut(ok=True, path=str(fname.relative_to(Path.cwd())))
 
-# ------ Reindex: POST（新規） ------
+# ------ Reindex: POST（★追加） ------
 @app.post("/admin/reindex", response_model=ReindexOut, summary="Rebuild TF-IDF index")
 def admin_reindex(
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
