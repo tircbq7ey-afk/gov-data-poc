@@ -1,100 +1,127 @@
-# app/qa_service.py
-from __future__ import annotations
+import os
+import time
+import json
+from datetime import datetime
+from typing import Optional, List, Any, Dict
 
-from fastapi import FastAPI, Query, Body
+from fastapi import FastAPI, Query, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from pathlib import Path
-from datetime import datetime, timezone
-import json
 
-APP_VERSION = "dev"
+# ------------------------------------------------------------
+# Settings
+# ------------------------------------------------------------
+API_TOKEN = os.getenv("API_TOKEN", "").strip()
+VERSION = os.getenv("VERSION", "dev")
+BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
+START_TS = time.time()
 
-app = FastAPI(title="gov-data-poc", version=APP_VERSION)
+def _require(x_api_key: Optional[str]) -> None:
+    """Require x-api-key only when API_TOKEN is set."""
+    if API_TOKEN and x_api_key != API_TOKEN:
+        raise HTTPException(status_code=401, detail="unauthorized")
 
-# --- data dirs ---
-DATA_DIR = Path("/app/data")
-FEEDBACK_DIR = DATA_DIR / "feedback"
-FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-
-# --- Schemas ---
-class AskResponse(BaseModel):
-    q: str = Field(..., title="Q")
-    lang: str = Field("ja", title="Lang")
-    answer: str = Field("", title="Answer")
-    sources: list[str] = Field(default_factory=list, title="Sources")
+# ------------------------------------------------------------
+# Pydantic models
+# ------------------------------------------------------------
+class AskOut(BaseModel):
+    q: str
+    lang: str = "ja"
+    answer: str
+    sources: List[str] = Field(default_factory=list)
 
 class AskIn(BaseModel):
     q: str
-    lang: str = "ja"
     top_k: int = 3
     min_score: float = 0.2
+    lang: str = "ja"
 
 class FeedbackIn(BaseModel):
     q: str
     answer: str
-    sources: list[str] = Field(default_factory=list)
+    label: str = "good"
+    sources: List[str] = Field(default_factory=list)
     lang: str = "ja"
 
-class FeedbackOut(BaseModel):
-    ok: bool
-    path: str
+class ReindexIn(BaseModel):
+    force: bool = False
 
-# --- health ---
-@app.get("/health", summary="Health")
+# ------------------------------------------------------------
+# FastAPI
+# ------------------------------------------------------------
+app = FastAPI(title="gov-data-poc", version=VERSION)
+
+@app.get("/health")
 def health():
     return {
         "ok": True,
-        "version": APP_VERSION,
-        "build_time": "unknown",
-        "uptime_sec": 0,
+        "version": VERSION,
+        "build_time": BUILD_TIME,
+        "uptime_sec": round(time.time() - START_TS, 2),
     }
 
-# --- Ask (GET) ---
-@app.get("/ask", summary="Ask", response_model=AskResponse)
-def ask_get(
-    q: str = Query(..., description="user question"),
-    lang: str = Query("ja"),
-    top_k: int = Query(3, ge=1),
-    min_score: float = Query(0.2, ge=0.0, le=1.0),
-):
-    # 実データ検索のダミー応答
-    answer = f"[{lang}] 受理: {q}"
-    return AskResponse(q=q, lang=lang, answer=answer, sources=[])
-
-# --- Ask (POST) ---
-@app.post("/ask", summary="Ask (POST)", response_model=AskResponse)
-def ask_post(body: AskIn = Body(...)):
-    return ask_get(
-        q=body.q,
-        lang=body.lang,
-        top_k=body.top_k,
-        min_score=body.min_score,
-    )
-
-# --- Feedback (POST) ---
-@app.post("/feedback", summary="Feedback", response_model=FeedbackOut)
-def feedback_post(fb: FeedbackIn = Body(...)):
-    day = datetime.now().strftime("%Y%m%d")
-    out_path = FEEDBACK_DIR / f"{day}.jsonl"
-    record = {
-        "q": fb.q,
-        "answer": fb.answer,
-        "label": "good",
-        "sources": fb.sources,
-        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
-    with out_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return FeedbackOut(ok=True, path=str(out_path))
-
-# --- Admin: Reindex (POST) ---
-@app.post("/admin/reindex", summary="Reindex dataset")
-def admin_reindex_post():
-    # ここで再インデックス実装を差し込める
-    return JSONResponse({"ok": True, "detail": "reindex started"})
-
-# --- root ---
-@app.get("/", summary="Root")
+@app.get("/")
 def root():
-    return {}
+    return {"ok": True, "service": "gov-data-poc", "version": VERSION}
+
+# ------------------------ /ask ------------------------------
+
+def _dummy_answer(q: str, lang: str) -> str:
+    # NOTE: ここはPoC用のダミー回答。実データ検索に接続する場合は差し替え。
+    if lang.startswith("ja"):
+        return f"[{lang}] 受理: {q}"
+    return f"[{lang}] accepted: {q}"
+
+@app.get("/ask", response_model=AskOut)
+def ask_get(
+    q: str = Query(..., description="ユーザ質問"),
+    top_k: int = Query(3, ge=1, le=50),
+    min_score: float = Query(0.2, ge=0, le=1),
+    lang: str = Query("ja"),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
+    _require(x_api_key)
+    answer = _dummy_answer(q, lang)
+    return AskOut(q=q, lang=lang, answer=answer, sources=[])
+
+@app.post("/ask", response_model=AskOut)
+def ask_post(
+    body: AskIn,
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
+    _require(x_api_key)
+    answer = _dummy_answer(body.q, body.lang)
+    return AskOut(q=body.q, lang=body.lang, answer=answer, sources=[])
+
+# ---------------------- /feedback ---------------------------
+
+FEEDBACK_DIR = "/app/data/feedback"  # ホストの ./data にマウントする想定
+
+@app.post("/feedback")
+def feedback(
+    body: FeedbackIn,
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
+    _require(x_api_key)
+    os.makedirs(FEEDBACK_DIR, exist_ok=True)
+    out_path = os.path.join(FEEDBACK_DIR, f"{datetime.utcnow():%Y%m%d}.jsonl")
+
+    rec: Dict[str, Any] = body.model_dump()
+    rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+    with open(out_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    return JSONResponse({"ok": True, "path": out_path})
+
+# ---------------------- /admin/reindex ----------------------
+
+@app.post("/admin/reindex")
+def admin_reindex(
+    body: ReindexIn = ReindexIn(),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
+    _require(x_api_key)
+    # ここで実際の再インデックス処理を呼び出す。PoCではダミー。
+    # time.sleep(0.1) などしてもよい
+    return {"ok": True, "reindexed": True, "force": body.force}
