@@ -1,85 +1,139 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import csv, os, json
+# qa_service.py
+from __future__ import annotations
 
-app = FastAPI(
-    title="gov-data-poc",
-    version="dev",
-    description="Prototype API for document Q&A and feedback collection"
-)
+import datetime as dt
+import json
+from pathlib import Path
+from typing import List, Optional
 
-DATA_PATH = "./data/answers.csv"
-FEEDBACK_PATH = "./data/feedback"
+from fastapi import FastAPI, Header
+from fastapi.responses import JSONResponse
 
-# ======================================================
-# Health Check
-# ======================================================
-@app.get("/health", summary="Health")
-def health():
-    return {"ok": True, "version": "dev"}
+app = FastAPI(title="gov-data-poc", version="dev")
+
+# ====== 型 ======
+from pydantic import BaseModel, Field
 
 
-# ======================================================
-# Q&Aエンドポイント（簡易検索）
-# ======================================================
-@app.get("/ask", summary="Ask")
-def ask(q: str, top_k: int = 3, min_score: float = 0.2, lang: str = "ja"):
-    try:
-        if not os.path.exists(DATA_PATH):
-            raise HTTPException(status_code=404, detail="Data file not found")
-
-        results = []
-        with open(DATA_PATH, encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if q in row["question"]:
-                    results.append(row)
-
-        if not results:
-            return {"q": q, "lang": lang, "answer": "該当データが見つかりませんでした。", "sources": []}
-
-        # 仮スコアで上位 top_k 件を返す
-        results = results[:top_k]
-        return {
-            "q": q,
-            "lang": lang,
-            "answer": [r["answer"] for r in results],
-            "sources": [r["source"] for r in results]
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+class AskQuery(BaseModel):
+    q: str = Field(..., title="Query")
+    lang: str = Field("ja", title="Lang")
+    top_k: int = Field(3, ge=1, le=50, title="TopK")
+    min_score: float = Field(0.2, ge=0.0, le=1.0, title="MinScore")
 
 
-# ======================================================
-# Feedback エンドポイント
-# ======================================================
-class Feedback(BaseModel):
+class Source(BaseModel):
+    id: str = Field(..., title="Location")
+    score: Optional[float] = None
+
+
+class AskResponse(BaseModel):
+    q: str
+    lang: str
+    answer: str
+    sources: List[Source] = []
+
+
+class FeedbackIn(BaseModel):
     q: str
     answer: str
-    sources: list[str]
+    sources: List[str] = []
     lang: str = "ja"
 
-@app.post("/feedback", summary="Feedback")
-def feedback(fb: Feedback):
-    os.makedirs(FEEDBACK_PATH, exist_ok=True)
-    path = os.path.join(FEEDBACK_PATH, "20251013.jsonl")
 
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(fb.dict(), ensure_ascii=False) + "\n")
-
-    return {"ok": True, "path": path}
+class FeedbackOut(BaseModel):
+    ok: bool
+    path: str
 
 
-# ======================================================
-# 管理者用：CSVデータ再読み込み
-# ======================================================
-@app.post("/admin/reindex", summary="Rebuild index")
-def admin_reindex():
-    if not os.path.exists(DATA_PATH):
-        raise HTTPException(status_code=404, detail="Data file not found")
+# ====== 共通ロジック ======
+def _answer_query(q: str, lang: str, top_k: int, min_score: float) -> AskResponse:
+    """
+    実データ検索の“入口”。まずはデモ実装：
+    - 何もインデックスを持たない場合でも形だけ回答を返す
+    - 後で RAG / ベクター検索に差し替えやすいように関数で分離
+    """
+    # TODO: ここに実データ検索を差し込む（ベクター検索・BM25など）
+    demo_answer = "[ja] デモ回答: 実装済みの検索ロジックに置き換えてください。"
+    return AskResponse(
+        q=q,
+        lang=lang,
+        answer=demo_answer,
+        sources=[],
+    )
 
-    with open(DATA_PATH, encoding="utf-8") as f:
-        row_count = sum(1 for _ in csv.DictReader(f))
 
-    return {"ok": True, "docs": row_count}
+def _json(obj: BaseModel | dict) -> JSONResponse:
+    # ensure_ascii=False で日本語の文字化けを最小化（表示側のエンコーディングにも依存）
+    return JSONResponse(
+        content=json.loads(json.dumps(obj if isinstance(obj, dict) else obj.model_dump(), ensure_ascii=False)),
+        media_type="application/json; charset=utf-8",
+    )
+
+
+# ====== エンドポイント ======
+@app.get("/health")
+def health() -> JSONResponse:
+    return _json(
+        {
+            "ok": True,
+            "version": app.version,
+            "build_time": "unknown",
+            "uptime_sec": 0,  # 必要なら起動時刻から計算する
+        }
+    )
+
+
+@app.get("/", summary="Root")
+def root() -> JSONResponse:
+    return _json({"ok": True, "service": app.title})
+
+
+# ---- /ask: GET（既存の動作）----
+@app.get("/ask", response_model=AskResponse, summary="Ask (GET)")
+def ask_get(
+    q: str,
+    lang: str = "ja",
+    top_k: int = 3,
+    min_score: float = 0.2,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+):
+    return _answer_query(q=q, lang=lang, top_k=top_k, min_score=min_score)
+
+
+# ---- /ask: POST（新規追加）----
+@app.post("/ask", response_model=AskResponse, summary="Ask (POST)")
+def ask_post(
+    payload: AskQuery,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+):
+    return _answer_query(
+        q=payload.q,
+        lang=payload.lang,
+        top_k=payload.top_k,
+        min_score=payload.min_score,
+    )
+
+
+# ---- /feedback: POST（既存・jsonl に追記）----
+@app.post("/feedback", response_model=FeedbackOut, summary="Feedback")
+def feedback(
+    fb: FeedbackIn,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+):
+    out_dir = Path("./data/feedback")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    outfile = out_dir / f"{dt.datetime.utcnow():%Y%m%d}.jsonl"
+    line = json.dumps(fb.model_dump(), ensure_ascii=False)
+    with outfile.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+    return _json(FeedbackOut(ok=True, path=str(outfile)))
+
+
+# ---- /admin/reindex: POST（スタブ実装）----
+@app.post("/admin/reindex", summary="Rebuild index (stub)")
+def admin_reindex(
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+):
+    # TODO: 実データの再取り込み＆インデックス構築をここに実装
+    return _json({"ok": True, "indexed": 0})
