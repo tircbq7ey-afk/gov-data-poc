@@ -10,14 +10,15 @@ services:
       - "8010"
     environment:
       - TZ=Asia/Tokyo
+    # ★ bind mount を確実に効かせる
+    #   Windows/PowerShell でも確実に解決されるよう ${PWD} を使います
     volumes:
-      # ★ これで /app/data がホスト ./data に見える
-      - ./data:/app/data
+      - ${PWD}/data:/app/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8010/health || exit 1"]
       interval: 10s
       timeout: 3s
-      retries: 5
+      retries: 12
     restart: unless-stopped
 
   proxy:
@@ -28,12 +29,10 @@ services:
     ports:
       - "8080:80"
     volumes:
-      # 既にお持ちの nginx 設定をここに
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-    healthcheck:
-      # /health をアプリにプロキシしている前提
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/health || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
+      # ★ /admin/ も通す nginx 設定をマウント
+      - ${PWD}/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
+
+networks:
+  default:
+    name: gov-data-poc_default
