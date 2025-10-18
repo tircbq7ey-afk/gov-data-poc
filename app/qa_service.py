@@ -1,31 +1,30 @@
-# qa_service.py
-from fastapi import FastAPI, Header, Query
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pathlib import Path
 import json
 
-app = FastAPI(
-    title="gov-data-poc",
-    version="dev",
-    openapi_url="/openapi.json",
-)
+app = FastAPI(title="gov-data-poc", version="dev")
 
-# ====== Pydantic models ======
-
+# =========================
+# Models
+# =========================
 class AskIn(BaseModel):
-    q: str = Field(..., title="質問")
-    top_k: int = Field(3, ge=1, le=50, title="Top K")
-    min_score: float = Field(0.2, ge=0, le=1, title="Min Score")
-    lang: str = Field("ja", title="Lang")
+    q: str = Field(..., title="Q")
+    top_k: int = 3
+    min_score: float = 0.2
+    lang: str = "ja"
 
 class Source(BaseModel):
-    title: str
+    id: Optional[str] = None
+    title: Optional[str] = None
     url: Optional[str] = None
     score: Optional[float] = None
+    snippet: Optional[str] = None
 
-class AskOut(BaseModel):
+class AskResponse(BaseModel):
     q: str
     lang: str
     answer: str
@@ -41,73 +40,90 @@ class FeedbackOut(BaseModel):
     ok: bool
     path: str
 
-class ReindexOut(BaseModel):
+class Health(BaseModel):
     ok: bool
-    indexed_docs: int
-    msg: str = ""
+    version: str
+    build_time: str
+    uptime_sec: float
 
-# ====== Helpers ======
+# =========================
+# In-memory / stub storage
+# =========================
+APP_START = datetime.utcnow()
+DATA_DIR = Path("./data")
+FEEDBACK_DIR = DATA_DIR / "feedback"
+DOCS_DIR = DATA_DIR / "documents"
+INDEX_DIR = DATA_DIR / "index"
+FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+DOCS_DIR.mkdir(parents=True, exist_ok=True)
+INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
-def _dummy_answer(q: str, lang: str) -> str:
-    # ここに実検索ロジック（RAG 等）を入れる想定。
-    # ひとまずダミー回答。
-    if lang.startswith("ja"):
-        return "[ja] 受理: " + q
-    return "[en] accepted: " + q
+# ダミーの検索器（必要に応じて本実装に置換）
+def search_stub(q: str, top_k: int, min_score: float) -> List[Source]:
+    # TODO: ベクタ検索に置き換え
+    return []
 
-def _feedback_path() -> Path:
-    d = Path("./data/feedback")
-    d.mkdir(parents=True, exist_ok=True)
-    return d / f"{datetime.utcnow():%Y%m%d}.jsonl"
+def answer_stub(q: str, hits: List[Source], lang: str) -> str:
+    # TODO: LLM 連携に置き換え
+    return "[ja] 受理: 申請書の提出方法"
 
-# ====== Endpoints ======
+# =========================
+# Endpoints
+# =========================
+@app.get("/health", response_model=Health, summary="Health")
+def health() -> Health:
+    return Health(
+        ok=True,
+        version="dev",
+        build_time="unknown",
+        uptime_sec=(datetime.utcnow() - APP_START).total_seconds(),
+    )
 
-@app.get("/health")
-def health():
-    return {"ok": True, "version": "dev", "build_time": "unknown", "uptime_sec": 0}
+@app.get("/", summary="Root")
+def root() -> Dict[str, Any]:
+    return {"ok": True}
 
-# --- Ask (GET) 既存 ---
-@app.get("/ask", response_model=AskOut, summary="Ask")
+# ---- /ask: GET（既存互換） ----
+@app.get("/ask", response_model=AskResponse, summary="Ask")
 def ask_get(
-    q: str = Query(..., title="q"),
-    lang: str = Query("ja", title="Lang"),
-    top_k: int = Query(3, ge=1, le=50),
-    min_score: float = Query(0.2, ge=0, le=1),
+    q: str,
+    lang: str = "ja",
+    top_k: int = 3,
+    min_score: float = 0.2,
     x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
 ):
-    answer = _dummy_answer(q, lang)
-    return AskOut(q=q, lang=lang, answer=answer, sources=[])
+    hits = search_stub(q, top_k, min_score)
+    ans = answer_stub(q, hits, lang)
+    return AskResponse(q=q, lang=lang, answer=ans, sources=hits)
 
-# --- Ask (POST) 新規 ---
-@app.post("/ask", response_model=AskOut, summary="Ask (POST)")
+# ---- /ask: POST（新規追加） ----
+@app.post("/ask", response_model=AskResponse, summary="Ask (POST)")
 def ask_post(
     body: AskIn,
     x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
 ):
-    answer = _dummy_answer(body.q, body.lang)
-    return AskOut(q=body.q, lang=body.lang, answer=answer, sources=[])
+    hits = search_stub(body.q, body.top_k, body.min_score)
+    ans = answer_stub(body.q, hits, body.lang)
+    return AskResponse(q=body.q, lang=body.lang, answer=ans, sources=hits)
 
-# --- Feedback (POST) 既存 ---
+# ---- /feedback: POST（既存） ----
 @app.post("/feedback", response_model=FeedbackOut, summary="Feedback")
-def feedback_feedback_post(
+def feedback(
     fb: FeedbackIn,
     x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
 ):
-    path = _feedback_path()
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(fb.dict(), ensure_ascii=False) + "\n")
-    return FeedbackOut(ok=True, path=str(path))
+    ts = datetime.utcnow().strftime("%Y%m%d")
+    out = FEEDBACK_DIR / f"{ts}.jsonl"
+    with out.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(fb.model_dump(), ensure_ascii=False) + "\n")
+    return FeedbackOut(ok=True, path=str(out))
 
-# --- Reindex (POST) 新規（簡易） ---
-@app.post("/admin/reindex", response_model=ReindexOut, summary="Reindex")
-def admin_reindex_post(
+# ---- /admin/reindex: POST（新規追加）----
+@app.post("/admin/reindex", summary="Rebuild index")
+def admin_reindex(
     x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
-):
-    """
-    本番ではここでドキュメントを読み込み、ベクター索引を再構築する。
-    ここでは docs 配下のファイル数を数えるダミー実装。
-    """
-    docs_dir = Path("./data/docs")
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    count = sum(1 for _ in docs_dir.rglob("*") if _.is_file())
-    return ReindexOut(ok=True, indexed_docs=count, msg="Reindexed (dummy)")
+) -> Dict[str, Any]:
+    # TODO: 実データから埋め込みを作って INDEX_DIR に保存する処理を書く
+    # ここではスタブで空のインデックスを作るだけ
+    (INDEX_DIR / "READY").write_text(datetime.utcnow().isoformat(), encoding="utf-8")
+    return {"ok": True, "indexed_docs": 0, "index_dir": str(INDEX_DIR)}
