@@ -5,7 +5,8 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # 依存ライブラリ
-RUN pip install --no-cache-dir fastapi uvicorn
+RUN pip install --no-cache-dir fastapi uvicorn \
+    scikit-learn numpy
 
 # アプリコード
 COPY ./qa_service.py /app/qa_service.py
