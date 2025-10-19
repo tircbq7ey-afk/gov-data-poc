@@ -9,7 +9,7 @@ services:
     environment:
       - TZ=Asia/Tokyo
       # 任意: API_TOKEN を使うならここで設定
-      # - API_TOKEN=changeme
+      # - API_TOKEN=changeme-local-token
       - DATA_DIR=/app/data
     volumes:
       # ← ホスト側 ./data がコンテナ /app/data と同期されます
