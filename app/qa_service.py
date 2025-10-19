@@ -1,14 +1,12 @@
-# app/qa_service.py
 import os, time, json
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, Query, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-# ========= Settings =========
-API_TOKEN = os.getenv("API_TOKEN", "").strip()  # 例: changeme-local-token
+API_TOKEN = os.getenv("API_TOKEN", "").strip()
 VERSION = os.getenv("VERSION", "dev")
 BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
 START_TS = time.time()
@@ -16,11 +14,9 @@ START_TS = time.time()
 app = FastAPI(title="gov-data-poc", version=VERSION)
 
 def _require(x_api_key: Optional[str]) -> None:
-    """トークンが設定されているときだけ認証を有効化"""
     if API_TOKEN and x_api_key != API_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-# ========= Health / Root =========
 @app.get("/health")
 def health():
     return {
@@ -34,25 +30,25 @@ def health():
 def root():
     return {"ok": True, "service": "gov-data-poc", "version": VERSION}
 
-# ========= /ask =========
+# ========= ASK =========
+
 class AskResponse(BaseModel):
     q: str
     lang: str
     answer: str
     sources: List[str] = Field(default_factory=list)
 
-# GET /ask（既存）
+# 既存：GET /ask
 @app.get("/ask", response_model=AskResponse)
 def ask_get(
-    q: str = Query(...),
-    lang: str = Query("ja"),
+    q: str = Query(..., title="Q"),
+    lang: str = Query("ja", title="Lang"),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # いまはダミー応答
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
-# POST /ask（追加）
+# 追加：POST /ask（JSONボディ）
 class AskIn(BaseModel):
     q: str
     top_k: Optional[int] = 3
@@ -65,15 +61,13 @@ def ask_post(
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # いまはダミー応答
+    # 実処理は PoC 想定のダミー応答
     return AskResponse(
-        q=body.q,
-        lang=body.lang,
-        answer=f"[{body.lang}] 受理: {body.q}",
-        sources=[],
+        q=body.q, lang=body.lang, answer=f"[{body.lang}] 受理: {body.q}", sources=[]
     )
 
-# ========= /feedback =========
+# ========= FEEDBACK =========
+
 class FeedbackIn(BaseModel):
     q: str
     answer: str
@@ -82,25 +76,19 @@ class FeedbackIn(BaseModel):
     lang: str = "ja"
 
 @app.post("/feedback")
-def feedback(
-    body: FeedbackIn,
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-):
+def feedback(body: FeedbackIn, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
     _require(x_api_key)
-
-    out_dir = "./data/feedback"
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"{datetime.utcnow():%Y%m%d}.jsonl")
-
+    path = "./data/feedback"
+    os.makedirs(path, exist_ok=True)
+    out = os.path.join(path, f"{datetime.utcnow():%Y%m%d}.jsonl")
     rec: Dict[str, Any] = body.model_dump()
     rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-
-    with open(out_path, "a", encoding="utf-8") as f:
+    with open(out, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return JSONResponse({"ok": True, "path": out})
 
-    return JSONResponse({"ok": True, "path": out_path})
+# ========= ADMIN =========
 
-# ========= /admin/reindex（追加） =========
 class ReindexIn(BaseModel):
     force: bool = False
 
@@ -110,12 +98,10 @@ def admin_reindex(
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-
+    # フラグファイルを置く（PoC想定）
     flags_dir = "./data/flags"
     os.makedirs(flags_dir, exist_ok=True)
-    marker = os.path.join(flags_dir, f"reindex_{datetime.utcnow():%Y%m%d%H%M%S}.flag")
-
-    with open(marker, "w", encoding="utf-8") as f:
-        f.write(json.dumps({"force": body.force, "ts": datetime.utcnow().isoformat() + "Z"}))
-
-    return {"ok": True, "queued": True, "force": body.force, "flag": marker}
+    flag_path = os.path.join(flags_dir, f"reindex_{int(time.time())}.flag")
+    with open(flag_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"force": body.force, "ts": time.time()}))
+    return {"ok": True, "flag": flag_path}
