@@ -67,10 +67,8 @@ def root():
 # ------------------------ /ask ------------------------------
 
 def _dummy_answer(q: str, lang: str) -> str:
-    # NOTE: ここはPoC用のダミー回答。実データ検索に接続する場合は差し替え。
-    if lang.startswith("ja"):
-        return f"[{lang}] 受理: {q}"
-    return f"[{lang}] accepted: {q}"
+    # PoC用ダミー。実データ検索に繋ぐ場合はここを差し替え
+    return f"[{lang}] 受理: {q}" if lang.startswith("ja") else f"[{lang}] accepted: {q}"
 
 @app.get("/ask", response_model=AskOut)
 def ask_get(
@@ -95,7 +93,7 @@ def ask_post(
 
 # ---------------------- /feedback ---------------------------
 
-FEEDBACK_DIR = "/app/data/feedback"  # ホストの ./data にマウントする想定
+FEEDBACK_DIR = "/app/data/feedback"  # ホストの ./data にマウント
 
 @app.post("/feedback")
 def feedback(
@@ -122,6 +120,5 @@ def admin_reindex(
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # ここで実際の再インデックス処理を呼び出す。PoCではダミー。
-    # time.sleep(0.1) などしてもよい
+    # 実処理に差し替え可（PoCではダミー）
     return {"ok": True, "reindexed": True, "force": body.force}
