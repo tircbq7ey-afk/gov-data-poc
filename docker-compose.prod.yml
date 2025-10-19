@@ -2,34 +2,28 @@ version: "3.9"
 
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     image: gov-data-poc-app:local
+    command: ["python", "-m", "uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
     environment:
       - TZ=Asia/Tokyo
-      # API トークンを使う場合は↓をセット（省略すれば認証なし）
-      # - API_TOKEN=changeme
-      - VERSION=prod
-    expose:
-      - "8010"
+      - API_TOKEN=${API_TOKEN:-}      # 任意。未設定なら認証なし
+      - VERSION=dev
+      - BUILD_TIME=${BUILD_TIME:-unknown}
+      - FEEDBACK_DIR=/app/data/feedback
     volumes:
-      # ★ これで /app/data がホスト ./data に見える
-      - ./data:/app/data
+      - ./data:/app/data               # ← ホスト ./data が /app/data に見える
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8010/health || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
-    restart: unless-stopped
 
   proxy:
     image: nginx:1.27
     depends_on:
-      app:
-        condition: service_healthy
+      - app
     ports:
       - "8080:80"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    restart: unless-stopped
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
