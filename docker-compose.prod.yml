@@ -5,23 +5,23 @@ services:
     build:
       context: .
     image: gov-data-poc-app:local
-    command: ["python", "-m", "uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
+    command: ["python", "-m", "uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010", "--proxy-headers"]
     expose:
       - "8010"
     environment:
       - TZ=Asia/Tokyo
-      # ← ここで固定（.env不要）
       - API_TOKEN=changeme-local-token
-      - VERSION=dev
+      # （必要に応じて）VERSION/BUILD_TIME もここで渡せます
+      # - VERSION=dev
+      # - BUILD_TIME=2025-10-19T00:00:00Z
     volumes:
-      # コンテナ /app/data ↔ ホスト ./data
+      # /app/data がホスト側 ./data に見える（feedback/flags が自動で出てくる）
       - ./data:/app/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8010/health || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
-    restart: unless-stopped
 
   proxy:
     image: nginx:1.27
@@ -31,4 +31,3 @@ services:
       - app
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    restart: unless-stopped
