@@ -6,19 +6,18 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-API_TOKEN = os.getenv("API_TOKEN", "").strip()
+# ← 環境変数が無ければ "changeme-local-token" を使う
+API_TOKEN = os.getenv("API_TOKEN", "changeme-local-token").strip()
 VERSION = os.getenv("VERSION", "dev")
 BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
 START_TS = time.time()
 
 app = FastAPI(title="gov-data-poc", version=VERSION)
 
-# --- Auth helper -------------------------------------------------------------
 def _require(x_api_key: Optional[str]) -> None:
     if API_TOKEN and x_api_key != API_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-# --- Schemas -----------------------------------------------------------------
 class AskResponse(BaseModel):
     q: str
     lang: str
@@ -41,7 +40,6 @@ class FeedbackIn(BaseModel):
 class ReindexIn(BaseModel):
     force: bool = False
 
-# --- Health & root -----------------------------------------------------------
 @app.get("/health")
 def health():
     return {
@@ -55,7 +53,7 @@ def health():
 def root():
     return {"ok": True, "service": "gov-data-poc", "version": VERSION}
 
-# --- ASK (GET) ---------------------------------------------------------------
+# GET /ask
 @app.get("/ask", response_model=AskResponse)
 def ask_get(
     q: str = Query(..., title="Q"),
@@ -63,27 +61,25 @@ def ask_get(
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # ここはデモ実装：受理したことだけ返す
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
-# --- ASK (POST) : 405回避 & JSONボディで呼べるように -------------------------
+# POST /ask
 @app.post("/ask", response_model=AskResponse)
 def ask_post(
     body: AskIn,
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # 実装は GET と同じダミー回答
     return AskResponse(q=body.q, lang=body.lang, answer=f"[{body.lang}] 受理: {body.q}", sources=[])
 
-# --- FEEDBACK (POST) ---------------------------------------------------------
+# POST /feedback → ./data/feedback/YYYYMMDD.jsonl へ追記
 @app.post("/feedback")
 def feedback(
     body: FeedbackIn,
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    base = "/app/data"  # コンテナ内の書き込み先（composeでホストの ./data にマウント）
+    base = "/app/data"
     path = os.path.join(base, "feedback")
     os.makedirs(path, exist_ok=True)
 
@@ -94,9 +90,10 @@ def feedback(
     with open(out, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
+    # ホスト視点の相対パスで返す
     return JSONResponse({"ok": True, "path": f"./data/feedback/{datetime.utcnow():%Y%m%d}.jsonl"})
 
-# --- ADMIN / REINDEX (POST) --------------------------------------------------
+# POST /admin/reindex → ./data/flags/reindex_*.flag を作成
 @app.post("/admin/reindex")
 def admin_reindex(
     body: ReindexIn,
