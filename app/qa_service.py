@@ -59,7 +59,7 @@ def health():
 def root():
     return {"ok": True, "service": "gov-data-poc", "version": VERSION}
 
-# 既存の GET /ask はそのまま保持
+# GET /ask（既存）
 @app.get("/ask", response_model=AskResponse)
 def ask_get(
     q: str = Query(..., title="Q"),
@@ -67,7 +67,6 @@ def ask_get(
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # ここでは PoC のダミー回答を返す
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
 # ★ 追加: POST /ask
@@ -77,8 +76,6 @@ def ask_post(
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # 実運用では body.top_k/min_score を検索に渡す。
-    # ここでは PoC のダミー回答。
     return AskResponse(
         q=body.q,
         lang=body.lang,
@@ -86,19 +83,17 @@ def ask_post(
         sources=[],
     )
 
-# 既存の POST /feedback はファイルに書き出す
+# 既存: POST /feedback（./data/feedback に JSONL 出力）
 @app.post("/feedback")
 def feedback(
     body: FeedbackIn,
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-
-    # /app/data/feedback に出力（ホスト側 ./data/feedback にマウントされる）
     path = "./data/feedback"
     os.makedirs(path, exist_ok=True)
-
     out = os.path.join(path, f"{datetime.utcnow():%Y%m%d}.jsonl")
+
     rec: Dict[str, Any] = body.model_dump()
     rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
@@ -115,12 +110,11 @@ def admin_reindex(
 ):
     _require(x_api_key)
 
-    # PoC: フラグファイルを残して「再構築したこと」を示す
+    # フラグファイルで「再構築した」ことを記録
     flags_dir = "./data/flags"
     os.makedirs(flags_dir, exist_ok=True)
     flag_path = os.path.join(flags_dir, "reindexed.flag")
     with open(flag_path, "w", encoding="utf-8") as f:
         f.write(json.dumps({"ts": datetime.utcnow().isoformat() + "Z", "force": body.force}))
 
-    # 実際の再インデックス処理があればここで実施
     return {"ok": True, "reindexed": True, "force": body.force, "flag": flag_path}
