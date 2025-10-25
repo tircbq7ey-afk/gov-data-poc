@@ -5,22 +5,20 @@ services:
     build:
       context: .
     image: gov-data-poc-app:local
-    command: ["python", "-m", "uvicorn", "app.qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
+    command: ["python", "-m", "uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
     expose:
       - "8010"
     environment:
       - TZ=Asia/Tokyo
-      - API_TOKEN=changeme-local-token
-      - VERSION=dev
+      - API_TOKEN=changeme-local-token   # ← これを使います
+      - DATA_DIR=/app/data
     volumes:
-      # /app/data がホストの ./data に見える
-      - ./data:/app/data
+      - ./data:/app/data                  # ← ここで ./data が /app/data に見える
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8010/health || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 10
-      start_period: 5s
 
   proxy:
     image: nginx:1.27
@@ -29,4 +27,5 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - app
+      app:
+        condition: service_healthy
