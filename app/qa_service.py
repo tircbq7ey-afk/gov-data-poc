@@ -6,6 +6,7 @@ from fastapi import FastAPI, Query, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+# .env or docker-compose の環境変数で上書き可
 API_TOKEN  = os.getenv("API_TOKEN", "changeme-local-token").strip()
 VERSION    = os.getenv("VERSION", "dev")
 BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
@@ -32,22 +33,31 @@ class FeedbackIn(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": VERSION, "build_time": BUILD_TIME,
-            "uptime_sec": round(time.time() - START_TS, 2)}
+    return {
+        "ok": True,
+        "version": VERSION,
+        "build_time": BUILD_TIME,
+        "uptime_sec": round(time.time() - START_TS, 2),
+    }
 
 @app.get("/")
 def root():
     return {"ok": True, "service": "gov-data-poc", "version": VERSION}
 
 @app.get("/ask", response_model=AskResponse)
-def ask(q: str = Query(...), lang: str = Query("ja"),
-        x_api_key: Optional[str] = Header(None, alias="x-api-key")):
+def ask(
+    q: str = Query(...),
+    lang: str = Query("ja"),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
     _require(x_api_key)
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
 @app.post("/feedback")
-def feedback(body: FeedbackIn,
-            x_api_key: Optional[str] = Header(None, alias="x-api-key")):
+def feedback(
+    body: FeedbackIn,
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
     _require(x_api_key)
     base = "./data"
     fb_dir = os.path.join(base, "feedback")
@@ -60,8 +70,10 @@ def feedback(body: FeedbackIn,
     return JSONResponse({"ok": True, "path": out})
 
 @app.post("/admin/reindex")
-def reindex(body: Dict[str, Any] | None = None,
-            x_api_key: Optional[str] = Header(None, alias="x-api-key")):
+def reindex(
+    body: Dict[str, Any] | None = None,
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
     _require(x_api_key)
     base = "./data"
     fb_dir = os.path.join(base, "feedback")
