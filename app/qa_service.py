@@ -1,32 +1,32 @@
-import os, json, time, datetime
+# /app/qa_service.py  （完全版）
+
+import os, time, json
+from datetime import datetime
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, Header, Query
+
+from fastapi import FastAPI, Query, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+# ---- settings ----
 API_TOKEN = os.getenv("API_TOKEN", "changeme-local-token").strip()
 VERSION   = os.getenv("VERSION", "dev")
 BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
-START_TS  = time.time()
+START_TS = time.time()
 
 app = FastAPI(title="gov-data-poc", version=VERSION)
 
 def _require(x_api_key: Optional[str]) -> None:
+    # API トークンが設定されている場合のみチェック
     if API_TOKEN and x_api_key != API_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-# ---- models
+# ---- models ----
 class AskResponse(BaseModel):
     q: str
     lang: str
     answer: str
     sources: List[str] = Field(default_factory=list)
-
-class AskIn(BaseModel):
-    q: str
-    top_k: int = 3
-    min_score: float = 0.2
-    lang: str = "ja"
 
 class FeedbackIn(BaseModel):
     q: str
@@ -35,17 +35,9 @@ class FeedbackIn(BaseModel):
     sources: List[str] = Field(default_factory=list)
     lang: str = "ja"
 
-# ---- utilities
-DATA_DIR    = "./data"
-FB_DIR      = os.path.join(DATA_DIR, "feedback")
-FLAGS_DIR   = os.path.join(DATA_DIR, "flags")
-os.makedirs(FB_DIR, exist_ok=True)
-os.makedirs(FLAGS_DIR, exist_ok=True)
-
-# ---- endpoints
+# ---- endpoints ----
 @app.get("/health")
-def health(x_api_key: Optional[str] = Header(None, alias="x-api-key")):
-    _require(x_api_key)
+def health():
     return {
         "ok": True,
         "version": VERSION,
@@ -54,53 +46,66 @@ def health(x_api_key: Optional[str] = Header(None, alias="x-api-key")):
     }
 
 @app.get("/")
-def root(x_api_key: Optional[str] = Header(None, alias="x-api-key")):
-    _require(x_api_key)
+def root():
     return {"ok": True, "service": "gov-data-poc", "version": VERSION}
 
-# GET /ask（既存の形）
 @app.get("/ask", response_model=AskResponse)
-def ask_get(
-    q: str = Query(...),
+def ask(
+    q: str = Query(..., description="query"),
     lang: str = Query("ja"),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # ダミー回答
+    # ここは PoC 用のダミー応答
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
-# POST /ask（追加）
-@app.post("/ask", response_model=AskResponse)
-def ask_post(
-    body: AskIn,
+@app.post("/feedback")
+def feedback(
+    body: FeedbackIn,
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # 必要なら top_k/min_score を使って検索する実装に差し替え
-    return AskResponse(
-        q=body.q, lang=body.lang, answer=f"[{body.lang}] 受理: {body.q}", sources=[]
-    )
+    # /app/data を前提（docker-compose で ./data をマウント）
+    base = "./data"
+    fb_dir = os.path.join(base, "feedback")
+    os.makedirs(fb_dir, exist_ok=True)
 
-# POST /feedback（既存）
-@app.post("/feedback")
-def feedback(body: FeedbackIn, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
-    _require(x_api_key)
-    out = os.path.join(FB_DIR, f"{datetime.datetime.utcnow():%Y%m%d}.jsonl")
+    # 日付でローテーション
+    out = os.path.join(fb_dir, f"{datetime.utcnow():%Y%m%d}.jsonl")
+
     rec: Dict[str, Any] = body.model_dump()
-    rec["ts"] = datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
     with open(out, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
     return JSONResponse({"ok": True, "path": out})
 
-# POST /admin/reindex（追加）
 @app.post("/admin/reindex")
-def admin_reindex(
+def reindex(
     body: Dict[str, Any] | None = None,
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
+    """
+    最小実装の reindex:
+      - ./data/feedback/*.jsonl を数えて ./data/flags/reindexed.ok を作成
+      - 将来、ここで実際のベクター索引再構築を呼び出す想定
+    """
     _require(x_api_key)
-    # フラグを書いて別プロセスに検知させる運用（最小構成）
-    flag = os.path.join(FLAGS_DIR, "reindex.touch")
-    with open(flag, "w", encoding="utf-8") as f:
-        f.write(datetime.datetime.utcnow().isoformat() + "Z")
-    return {"ok": True, "flag": flag}
+
+    base = "./data"
+    fb_dir = os.path.join(base, "feedback")
+    flag_dir = os.path.join(base, "flags")
+    os.makedirs(flag_dir, exist_ok=True)
+
+    count = 0
+    if os.path.isdir(fb_dir):
+        for name in os.listdir(fb_dir):
+            if name.endswith(".jsonl"):
+                count += 1
+
+    flag_path = os.path.join(flag_dir, "reindexed.ok")
+    with open(flag_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": datetime.utcnow().isoformat() + "Z", "files": count}))
+
+    return {"ok": True, "reindexed_files": count, "flag": flag_path}
