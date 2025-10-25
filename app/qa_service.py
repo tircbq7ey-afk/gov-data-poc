@@ -1,20 +1,13 @@
-import os, time, json
-from datetime import datetime
+import os, json, time, datetime
 from typing import Optional, List, Dict, Any
-
 from fastapi import FastAPI, Query, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-# ==== settings ====
-API_TOKEN   = os.getenv("API_TOKEN", "").strip()
-VERSION     = os.getenv("VERSION", "dev")
-BUILD_TIME  = os.getenv("BUILD_TIME", "unknown")
-START_TS    = time.time()
-
-DATA_DIR     = os.getenv("DATA_DIR", "/app/data")
-FEEDBACK_DIR = os.path.join(DATA_DIR, "feedback")
-FLAGS_DIR    = os.path.join(DATA_DIR, "flags")
+API_TOKEN = os.getenv("API_TOKEN", "changeme-local-token").strip()
+VERSION = os.getenv("VERSION", "dev")
+BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
+START_TS = time.time()
 
 app = FastAPI(title="gov-data-poc", version=VERSION)
 
@@ -22,7 +15,6 @@ def _require(x_api_key: Optional[str]) -> None:
     if API_TOKEN and x_api_key != API_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-# ==== health / root ====
 @app.get("/health")
 def health():
     return {
@@ -36,73 +28,64 @@ def health():
 def root():
     return {"ok": True, "service": "gov-data-poc", "version": VERSION}
 
-# ==== /ask ====
+# --------- /ask (GET) ----------
 class AskResponse(BaseModel):
     q: str
     lang: str
     answer: str
     sources: List[str] = Field(default_factory=list)
 
-# 既存：GET /ask
 @app.get("/ask", response_model=AskResponse)
-def ask_get(
-    q: str = Query(..., title="Q"),
-    lang: str = Query("ja", title="Lang"),
+def ask(
+    q: str = Query(..., description="質問"),
+    top_k: int = Query(3, ge=1, le=50),
+    min_score: float = Query(0.2, ge=0.0, le=1.0),
+    lang: str = Query("ja"),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # ダミー応答（実装に合わせて置き換え可）
+    # ここではダミー応答。実サービスをつなぐなら差し替え。
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
-# 追加：POST /ask（PowerShell から JSON で送りたい場合はこちら）
-class AskIn(BaseModel):
-    q: str
-    top_k: int = 3
-    min_score: float = 0.2
-    lang: str = "ja"
-
-@app.post("/ask", response_model=AskResponse)
-def ask_post(
-    body: AskIn,
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-):
-    _require(x_api_key)
-    # ダミー応答（必要に応じ検索/生成ロジックに差し替え）
-    return AskResponse(
-        q=body.q, lang=body.lang, answer=f"[{body.lang}] 受理: {body.q}", sources=[]
-    )
-
-# ==== /feedback ====
+# --------- /feedback (POST) ----------
 class FeedbackIn(BaseModel):
     q: str
     answer: str
-    label: str = "good"
-    sources: List[str] = Field(default_factory=list)
     lang: str = "ja"
+    label: str = "good"          # 任意
+    sources: List[str] = Field(default_factory=list)
 
 @app.post("/feedback")
 def feedback(body: FeedbackIn, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
     _require(x_api_key)
-    os.makedirs(FEEDBACK_DIR, exist_ok=True)
-    out_path = os.path.join(FEEDBACK_DIR, f"{datetime.utcnow():%Y%m%d}.jsonl")
-    rec: Dict[str, Any] = body.model_dump()
-    rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    with open(out_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    return JSONResponse({"ok": True, "path": out_path})
+    base = "./data"
+    fb_dir = os.path.join(base, "feedback")
+    os.makedirs(fb_dir, exist_ok=True)
 
-# ==== /admin/reindex ====
+    out = os.path.join(fb_dir, f"{datetime.datetime.utcnow():%Y%m%d}.jsonl")
+    rec: Dict[str, Any] = body.model_dump()
+    rec["ts"] = datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+    with open(out, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    return JSONResponse({"ok": True, "path": out})
+
+# --------- /admin/reindex (POST) ----------
 class ReindexIn(BaseModel):
     force: bool = False
 
 @app.post("/admin/reindex")
 def reindex(body: ReindexIn, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
     _require(x_api_key)
-    os.makedirs(FLAGS_DIR, exist_ok=True)
-    flag_file = os.path.join(FLAGS_DIR, "reindex")
-    # 単純に “フラグファイルを立てる” 実装（外部のジョブ等がこれを監視する想定）
-    with open(flag_file, "w", encoding="utf-8") as f:
-        f.write(datetime.utcnow().isoformat(timespec="seconds") + "Z")
-        if body.force:
-            f.write("\nforce=true")
-    return {"ok": True, "flag": flag_file}
+    base = "./data"
+    flags_dir = os.path.join(base, "flags")
+    os.makedirs(flags_dir, exist_ok=True)
+
+    flag_path = os.path.join(
+        flags_dir, f"reindex-{datetime.datetime.utcnow():%Y%m%dT%H%M%S}Z.flag"
+    )
+    with open(flag_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"force": body.force, "ts": time.time()}))
+
+    return {"ok": True, "flag": flag_path}
