@@ -12,16 +12,15 @@ services:
       - TZ=Asia/Tokyo
       - API_TOKEN=changeme-local-token
       - VERSION=dev
-      - BUILD_TIME=${BUILD_TIME-unknown}
-      - DATA_DIR=/app/data
     volumes:
-      # /app/data がホストの ./data とつながる（feedback/ や flags/ が見える）
+      # /app/data がホストの ./data に見える
       - ./data:/app/data
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8010/health || exit 1"]
       interval: 10s
-      timeout: 2s
-      retries: 5
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   proxy:
     image: nginx:1.27
