@@ -1,64 +1,66 @@
-# qa_service.py
-import os
-import json
-import time
+# app/qa_service.py
+from __future__ import annotations
+import os, json, time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, Header, Query, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-# ---- 環境変数とパス ----
-APP_PORT = int(os.getenv("APP_PORT", "8010"))
-WEB_ROOT = Path(os.getenv("WEB_ROOT", "/app/www")).resolve()
-DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data")).resolve()
-FEEDBACK_DIR = DATA_DIR / "feedback"
-FLAGS_DIR = DATA_DIR / "flags"
-API_TOKEN = os.getenv("API_TOKEN", "").strip()
+# --- env & paths
+VERSION   = os.getenv("VERSION", "dev")
+API_TOKEN = os.getenv("API_TOKEN", "").strip()  # 使うならヘッダ x-api-key で検証
+APP_PORT  = int(os.getenv("APP_PORT", "8010"))
 
+WEB_ROOT  = Path(os.getenv("WEB_ROOT", "/app/www")).resolve()
+DATA_DIR  = Path(os.getenv("DATA_DIR", "/app/data")).resolve()
+FEEDBACK_DIR = DATA_DIR / "feedback"
+FLAGS_DIR    = DATA_DIR / "flags"
+
+# ensure dirs
 for p in (WEB_ROOT, FEEDBACK_DIR, FLAGS_DIR):
     p.mkdir(parents=True, exist_ok=True)
 
-VERSION = os.getenv("VERSION", "dev")
-BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
 START_TS = time.time()
 
 app = FastAPI(title="gov-data-poc", version=VERSION)
 
-# 静的ファイルは /static にマウント。/ と /index.html は明示ルートで index.html を返す
+def _require_token(x_api_key: Optional[str]) -> None:
+    """API_TOKEN が設定されている場合のみ検証"""
+    if API_TOKEN and (x_api_key or "") != API_TOKEN:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+# --- static: / と /index.html
 if (WEB_ROOT / "index.html").exists():
-    app.mount("/static", StaticFiles(directory=str(WEB_ROOT)), name="static")
+    # 参考: /static でも配れるようにしておく
+    app.mount("/static", StaticFiles(directory=str(WEB_ROOT), html=True), name="static")
 
     @app.get("/", include_in_schema=False)
     def root_html():
         return FileResponse(WEB_ROOT / "index.html", media_type="text/html")
 
     @app.get("/index.html", include_in_schema=False)
-    def index_html():
+    def index_alias():
         return FileResponse(WEB_ROOT / "index.html", media_type="text/html")
 else:
     @app.get("/", include_in_schema=False)
-    def root_json():
+    def root_fallback():
         return {"ok": True, "service": "gov-data-poc", "version": VERSION}
 
-# 共通：x-api-key が必要ならチェック
-def _require(x_api_key: Optional[str]) -> None:
-    if API_TOKEN and x_api_key != API_TOKEN:
-        raise HTTPException(status_code=401, detail="unauthorized")
-
+# --- health
 @app.get("/health", summary="Health")
 def health():
     return {
         "ok": True,
         "version": VERSION,
-        "build_time": BUILD_TIME,
+        "build_time": os.getenv("BUILD_TIME", "unknown"),
         "uptime_sec": round(time.time() - START_TS, 2),
     }
 
-# --- /ask: 確認用のエコーAPI（そのままでもOK） ---
+# --- demo Q&A
 class AskResponse(BaseModel):
     q: str
     lang: str
@@ -69,12 +71,13 @@ class AskResponse(BaseModel):
 def ask(
     q: str = Query(...),
     lang: str = Query("ja"),
-    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
-    _require(x_api_key)
+    # 必要なら認証
+    _require_token(x_api_key)
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
-# --- /feedback: JSONL に追記 ---
+# --- feedback
 class FeedbackIn(BaseModel):
     q: str
     answer: str
@@ -85,11 +88,13 @@ class FeedbackIn(BaseModel):
 @app.post("/feedback", summary="Feedback")
 def feedback(
     body: FeedbackIn,
-    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
-    _require(x_api_key)
+    _require_token(x_api_key)
+
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-    out = FEEDBACK_DIR / f"{datetime.now(timezone.utc):%Y%m%d}.jsonl"
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    out = FEEDBACK_DIR / f"{day}.jsonl"
 
     rec: Dict[str, Any] = body.model_dump()
     rec["ts"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -97,16 +102,18 @@ def feedback(
     with open(out, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-    return JSONResponse({"ok": True, "path": str(out)})
+    return JSONResponse({"ok": True, "path": f"./data/feedback/{out.name}"})
 
-# --- /admin/reindex: フラグ作成（管理操作） ---
+# --- admin: reindex flag
 @app.post("/admin/reindex", summary="Admin Reindex")
 def admin_reindex(
     force: bool = True,
-    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
-    _require(x_api_key)
+    _require_token(x_api_key)
+
     FLAGS_DIR.mkdir(parents=True, exist_ok=True)
-    flag = FLAGS_DIR / f"reindex.{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.flag"
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    flag = FLAGS_DIR / f"reindex.{ts}.flag"
     flag.write_text("reindex\n", encoding="utf-8")
-    return {"ok": True, "flag": str(flag)}
+    return {"ok": True, "flag": f"./data/flags/{flag.name}"}
