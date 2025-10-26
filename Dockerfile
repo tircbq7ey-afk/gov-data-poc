@@ -9,16 +9,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 依存
+# 依存（必要最低限）
 RUN pip install --no-cache-dir fastapi uvicorn
 
 # ディレクトリ作成
 RUN mkdir -p /app/www /app/data/feedback /app/data/flags
 
 # アプリ本体
-COPY qa_service.py /app/qa_service.py
+COPY app/qa_service.py /app/qa_service.py
 
-# Web公開物（app/www/index.html など）
+# Web 配下（app/www/index.html を用意してある前提）
 COPY app/www /app/www
 
 EXPOSE 8010
