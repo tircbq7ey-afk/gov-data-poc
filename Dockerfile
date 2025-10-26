@@ -1,3 +1,4 @@
+# Dockerfile
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -8,15 +9,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 依存（最小構成）
-RUN pip install --no-cache-dir fastapi uvicorn[standard]
+# 依存
+RUN pip install --no-cache-dir fastapi uvicorn
 
-# 必要フォルダ
+# ディレクトリ作成
 RUN mkdir -p /app/www /app/data/feedback /app/data/flags
 
-# アプリ
-COPY app/qa_service.py /app/qa_service.py
-# 静的ファイル（任意。あれば配信される）
+# アプリ本体
+COPY qa_service.py /app/qa_service.py
+
+# Web公開物（app/www/index.html など）
 COPY app/www /app/www
 
 EXPOSE 8010
