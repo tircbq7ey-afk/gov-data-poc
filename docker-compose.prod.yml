@@ -6,14 +6,14 @@ services:
       dockerfile: Dockerfile
     container_name: gov-data-poc-app
     environment:
-      APP_PORT: "8010"
-      WEB_ROOT: "/app/www"
-      DATA_DIR: "/app/data"
-      # 管理 API を守るなら設定（/admin/reindex で要求）
-      # API_TOKEN: "changeme-local-token"
+      - APP_PORT=8010
+      - WEB_ROOT=/app/www
+      - DATA_DIR=/app/data
+      # 必要ならトークンを有効化
+      # - API_TOKEN=changeme-local-token
     volumes:
+      - ./app/www:/app/www:ro
       - ./data:/app/data
-      - ./app/www:/app/www
     expose:
       - "8010"
 
