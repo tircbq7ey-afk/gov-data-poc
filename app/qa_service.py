@@ -1,147 +1,123 @@
+# app/qa_service.py
 import os
-import time
 import json
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any, List
-from datetime import datetime
+from typing import List, Optional
 
-from fastapi import FastAPI, Header, HTTPException, Query, Body
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Header, HTTPException, Body
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-# ====== メタ / 設定 ======
-API_TOKEN = os.getenv("API_TOKEN", "changeme-local-token").strip()
-VERSION = os.getenv("VERSION", "dev")
-BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
-START_TS = time.time()
+APP_START = time.time()
 
-# 静的ファイルのルート（優先順: WEB_ROOT → ./index → ./）
-_WEB_ROOT = os.getenv("WEB_ROOT", "").strip()
-if _WEB_ROOT:
-    WEB_ROOT = Path(_WEB_ROOT)
-else:
-    WEB_ROOT = Path("./index") if Path("./index/index.html").exists() else Path("./")
+# データ保存先（コンテナ内）
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+FEEDBACK_DIR = DATA_DIR / "feedback"
+FLAGS_DIR = DATA_DIR / "flags"
 
-app = FastAPI(title="gov-data-poc", version=VERSION)
+# 静的ファイルのルート（コンテナ内に index.html を置く）
+WEB_ROOT = Path(os.getenv("WEB_ROOT", "/app/www"))
 
+FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+FLAGS_DIR.mkdir(parents=True, exist_ok=True)
+WEB_ROOT.mkdir(parents=True, exist_ok=True)
 
-def _require(x_api_key: Optional[str]) -> None:
-    if API_TOKEN and x_api_key != API_TOKEN:
-        raise HTTPException(status_code=401, detail="unauthorized")
+app = FastAPI(title="gov-data-poc", version="dev")
 
 
-# ====== Health ======
-@app.get("/health")
-def health() -> Dict[str, Any]:
-    return {
-        "ok": True,
-        "version": VERSION,
-        "build_time": BUILD_TIME,
-        "uptime_sec": round(time.time() - START_TS, 2),
-    }
-
-
-# ====== 型定義 ======
+# ====== モデル ======
 class AskResponse(BaseModel):
-    q: str
-    lang: str
-    answer: str
-    sources: List[str] = Field(default_factory=list)
-
-
-class AskIn(BaseModel):
-    q: str = Field(..., title="Q")
-    lang: str = Field("ja", title="Lang")
-    top_k: int | None = None
-    min_score: float | None = None
+    q: str = Field(title="Q")
+    lang: str = Field(title="Lang")
+    answer: str = Field(title="Answer")
+    sources: List[str] = Field(default_factory=list, title="Sources")
 
 
 class FeedbackIn(BaseModel):
-    q: str
-    answer: str
-    label: str = "good"
-    sources: List[str] = Field(default_factory=list)
-    lang: str = "ja"
+    q: str = Field(title="Q")
+    answer: str = Field(title="Answer")
+    label: str = Field(default="good", title="Label")
+    sources: List[str] = Field(default_factory=list, title="Sources")
+    lang: Optional[str] = Field(default="ja", title="Lang")
+    ts: Optional[str] = Field(default=None, title="Timestamp ISO8601")
 
 
-# ====== /ask (GET) ======
-@app.get("/ask", response_model=AskResponse)
+class ReindexIn(BaseModel):
+    force: bool = True
+
+
+# ====== ヘルスチェック ======
+@app.get("/health", summary="Health")
+def health(x_api_key: Optional[str] = Header(default=None)):
+    return {
+        "ok": True,
+        "version": app.version,
+        "build_time": "unknown",
+        "uptime_sec": round(time.time() - APP_START, 2),
+    }
+
+
+# ====== 既存：GET /ask ======
+@app.get("/ask", response_model=AskResponse, summary="Ask")
 def ask_get(
-    q: str = Query(..., title="Q"),
-    lang: str = Query("ja", title="Lang"),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    q: str,
+    lang: str = "ja",
+    x_api_key: Optional[str] = Header(default=None),
 ):
-    _require(x_api_key)
-    # PoC のダミー応答
-    return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
+    # ここは PoC 用のダミー応答（必要に応じて検索/LLM 呼び出しに差し替え）
+    answer = "オンラインで申請できます。"
+    return AskResponse(q=q, lang=lang, answer=answer, sources=[])
 
 
-# ====== /ask (POST) ======
-@app.post("/ask", response_model=AskResponse)
-def ask_post(
-    payload: AskIn,
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+# ====== 既存：POST /feedback ======
+@app.post("/feedback", summary="Feedback")
+def feedback_post(
+    payload: FeedbackIn,
+    x_api_key: Optional[str] = Header(default=None),
 ):
-    _require(x_api_key)
-    return AskResponse(
-        q=payload.q,
-        lang=payload.lang,
-        answer=f"[{payload.lang}] 受理: {payload.q}",
-        sources=[],
-    )
+    # タイムスタンプ（無ければ付与）
+    ts = payload.ts or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    row = payload.dict()
+    row["ts"] = ts
 
-
-# ====== /feedback (POST) ======
-@app.post("/feedback")
-def feedback(
-    body: FeedbackIn,
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-):
-    _require(x_api_key)
-
-    # ./data/feedback/YYYYMMDD.jsonl に追記
-    base = Path("./data/feedback")
-    base.mkdir(parents=True, exist_ok=True)
-    out = base / f"{datetime.utcnow():%Y%m%d}.jsonl"
-
-    rec: Dict[str, Any] = body.model_dump()
-    rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-
+    # 日毎に .jsonl へ追記
+    fname = datetime.now(timezone.utc).strftime("%Y%m%d") + ".jsonl"
+    out = FEEDBACK_DIR / fname
     with out.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+    # 返却
     return JSONResponse({"ok": True, "path": str(out)})
 
 
-# ====== /admin/reindex (POST) ======
-@app.post("/admin/reindex")
+# ====== 追加：POST /admin/reindex ======
+@app.post("/admin/reindex", summary="Reindex")
 def admin_reindex(
-    payload: Dict[str, Any] = Body(default_factory=dict),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    body: ReindexIn,
+    x_api_key: Optional[str] = Header(default=None),
 ):
     """
-    再インデックス・トリガ。
-    data/flags にフラグファイルを置くだけの軽量実装。
-    実処理は別プロセス/ジョブで拾う想定。
+    インデックス再作成のトリガーファイルを /app/data/flags/ に作成
     """
-    _require(x_api_key)
-
-    flags_dir = Path("./data/flags")
-    flags_dir.mkdir(parents=True, exist_ok=True)
-
-    force = bool(payload.get("force", False))
-    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    flag_name = "reindex.force" if force else "reindex"
-    flag_path = flags_dir / f"{flag_name}.{stamp}"
-
-    with flag_path.open("w", encoding="utf-8") as f:
-        f.write(json.dumps({"force": force, "ts": stamp}, ensure_ascii=False))
-
-    return JSONResponse({"ok": True, "path": str(flag_path)})
+    FLAGS_DIR.mkdir(parents=True, exist_ok=True)
+    flag = FLAGS_DIR / ("reindex.force" if body.force else "reindex.request")
+    flag.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+    return {"ok": True, "flag": str(flag)}
 
 
-# ====== 静的ファイル配信（最後にマウントするのが重要） ======
-# API でマッチしないパスはすべて WEB_ROOT から配信されます
-#   例) /index.html, /favicon.ico, /assets/app.js など
-app.mount("/", StaticFiles(directory=str(WEB_ROOT), html=True), name="site")
+# ====== 追加：/index.html を返す ======
+@app.get("/index.html", include_in_schema=False)
+def serve_index():
+    index_file = WEB_ROOT / "index.html"
+    if not index_file.exists():
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return FileResponse(index_file)
+
+
+# ====== 追加：静的ファイル（/static/*）を公開（任意の JS/CSS など） ======
+if WEB_ROOT.exists():
+    static_dir = WEB_ROOT  # 同じ場所に置く場合はこれで OK
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
