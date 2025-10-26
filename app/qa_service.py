@@ -31,7 +31,7 @@ API_TOKEN = os.getenv("API_TOKEN", "").strip()  # 空なら認証オフ
 # ====== FastAPI ======
 app = FastAPI(title="gov-data-poc", version=VERSION)
 
-# ---- 静的配信（index.html があれば / と /index.html で返す） ----
+# ---- 静的配信（index.html があれば / と /index.html で返す）----
 if (WEB_ROOT / "index.html").exists():
     app.mount("/static", StaticFiles(directory=str(WEB_ROOT), html=True), name="static")
 
@@ -92,7 +92,6 @@ def feedback(
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
-    # 1日1ファイル（JSONL）に追記
     out = FEEDBACK_DIR / f"{datetime.utcnow():%Y%m%d}.jsonl"
     rec: Dict[str, Any] = body.model_dump()
     rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
