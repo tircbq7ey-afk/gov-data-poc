@@ -12,8 +12,8 @@ services:
       - DATA_DIR=/app/data
       - API_TOKEN=changeme-local-token
     volumes:
-      - ./app/www:/app/www:ro
       - ./data:/app/data
+      - ./app/www:/app/www
     expose:
       - "8010"
 
