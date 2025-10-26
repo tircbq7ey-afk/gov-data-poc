@@ -1,4 +1,3 @@
-# app/Dockerfile という想定
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,20 +9,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # 依存
-# requirements.txt がない場合は最低限を直接入れる
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt || \
-    pip install --no-cache-dir fastapi uvicorn[standard]
+RUN pip install --no-cache-dir fastapi==0.112.0 uvicorn[standard]==0.30.0
 
 # 必要ディレクトリ
-RUN mkdir -p /app/www /app/data/flags /app/data/feedback
+RUN mkdir -p /app/www /app/data/feedback /app/data/flags
 
-# アプリ本体
-COPY qa_service.py /app/qa_service.py
-
-# Web ルート（index.html を含むディレクトリ）
-# 例: リポジトリの app/www に index.html がある前提
-COPY www /app/www
+# アプリ
+COPY app/qa_service.py /app/qa_service.py
+# 静的ファイル（index.html をここに）
+COPY app/www/ /app/www/
 
 EXPOSE 8010
 CMD ["uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
