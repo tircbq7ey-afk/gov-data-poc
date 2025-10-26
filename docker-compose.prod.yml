@@ -1,16 +1,16 @@
 version: "3.9"
+
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: gov-data-poc-app
+    image: gov-data-poc-app:local
     environment:
       - APP_PORT=8010
       - WEB_ROOT=/app/www
       - DATA_DIR=/app/data
-      # 必要ならトークンを有効化
-      # - API_TOKEN=changeme-local-token
+      - API_TOKEN=changeme-local-token
     volumes:
       - ./app/www:/app/www:ro
       - ./data:/app/data
@@ -18,11 +18,10 @@ services:
       - "8010"
 
   proxy:
-    image: caddy:2
-    container_name: gov-data-poc-proxy
+    image: nginx:1.27
     depends_on:
       - app
     ports:
       - "8080:80"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./nginx:/etc/nginx/conf.d:ro
