@@ -1,35 +1,29 @@
 import os
-from pathlib import Path
-from typing import List, Optional, Literal
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import List, Optional
 
-from fastapi import FastAPI, Header, Query, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query, Body
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-# ====== 環境変数 / パス ======
-APP_PORT  = int(os.getenv("APP_PORT", "8010"))
-WEB_ROOT  = Path(os.getenv("WEB_ROOT", "/app/www")).resolve()
-DATA_DIR  = Path(os.getenv("DATA_DIR", "/app/data")).resolve()
+# ==== 環境変数・パス ====
+APP_PORT = int(os.getenv("APP_PORT", "8010"))
+WEB_ROOT = Path(os.getenv("WEB_ROOT", "/app/www")).resolve()
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data")).resolve()
 FEEDBACK_DIR = DATA_DIR / "feedback"
-FLAGS_DIR    = DATA_DIR / "flags"
+FLAGS_DIR = DATA_DIR / "flags"
 
-for p in (WEB_ROOT, DATA_DIR, FEEDBACK_DIR, FLAGS_DIR):
+for p in (WEB_ROOT, FEEDBACK_DIR, FLAGS_DIR):
     p.mkdir(parents=True, exist_ok=True)
-
-API_TOKEN = os.getenv("API_TOKEN", "")  # 空ならトークン認証を無効化
-
-def assert_token(x_api_key: Optional[str]):
-    """管理系などで使う簡易トークン認証"""
-    if API_TOKEN and x_api_key != API_TOKEN:
-        raise HTTPException(status_code=401, detail="unauthorized")
 
 started_at = datetime.now(timezone.utc)
 
+# ==== FastAPI ====
 app = FastAPI(title="gov-data-poc", version="dev")
 
-# ====== 静的配信（/ と /index.html を返す） ======
+# ---- static: / と /index.html を返す ----
 if (WEB_ROOT / "index.html").exists():
     app.mount("/static", StaticFiles(directory=str(WEB_ROOT), html=True), name="static")
 
@@ -45,83 +39,50 @@ else:
     async def root_not_found():
         return JSONResponse({"ok": False, "detail": "index.html not found"}, status_code=404)
 
-# ====== モデル ======
-class AskOut(BaseModel):
-    q: str
-    lang: str = "ja"
-    answer: str
-    sources: List[str] = []
+# ---- 認証（管理系のみ） ----
+def assert_token(x_api_key: Optional[str]):
+    token = os.getenv("API_TOKEN", "")
+    if token and x_api_key != token:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+# ==== Schemas ====
+class AskResponse(BaseModel):
+    q: str = Field(title="Q")
+    lang: str = Field(default="ja", title="Lang")
+    answer: str = Field(title="Answer")
+    sources: List[str] = Field(default_factory=list, title="Sources")
 
 class FeedbackIn(BaseModel):
-    q: str
-    answer: str
-    label: Literal["good", "bad"] = "good"
-    sources: List[str] = []
-    ts: Optional[str] = None  # ISO 文字列で格納
+    q: str = Field(title="Q")
+    answer: str = Field(title="Answer")
+    label: str = Field(default="good", title="Label")
+    sources: List[str] = Field(default_factory=list, title="Sources")
+    lang: str = Field(default="ja", title="Lang")
 
-# ====== ヘルスチェック ======
+# ==== Endpoints ====
 @app.get("/health")
 def health():
-    return {
-        "ok": True,
-        "version": "dev",
-        "build_time": "unknown",
-        "uptime_sec": int((datetime.now(timezone.utc) - started_at).total_seconds()),
-    }
+    uptime = (datetime.now(timezone.utc) - started_at).total_seconds()
+    return {"ok": True, "version": "dev", "build_time": "unknown", "uptime_sec": round(uptime, 2)}
 
-# ====== Q&A (ダミー応答) ======
-@app.get("/ask", response_model=AskOut)
-def ask(
-    q: str = Query(..., alias="q", min_length=1),
-    lang: str = Query("ja"),
-    top_k: int = Query(3, ge=1, le=20),
-    min_score: float = Query(0.2, ge=0.0, le=1.0),
-    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
-):
-    # ※必要なら認証を有効化
-    # assert_token(x_api_key)
+@app.get("/ask", response_model=AskResponse)
+def ask(q: str = Query(...), lang: str = Query("ja")):
+    # ここは PoC 用のダミー応答
+    return AskResponse(q=q, lang=lang, answer="オンラインで申請できます。", sources=[])
 
-    # ここは PoC 用の固定応答。実装が入れば置き換え。
-    answer = "オンラインで申請できます。"
-    return AskOut(q=q, lang=lang, answer=answer, sources=[])
-
-# ====== フィードバック ======
 @app.post("/feedback")
-def feedback(
-    fb: FeedbackIn,
-    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
-):
-    # ※必要なら認証を有効化
-    # assert_token(x_api_key)
+def feedback(payload: FeedbackIn = Body(...)):
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d")
+    path = FEEDBACK_DIR / f"{ts}.jsonl"
+    line = payload.model_dump()
+    line["ts"] = datetime.now(timezone.utc).isoformat()
+    with path.open("a", encoding="utf-8") as f:
+        f.write(JSONResponse(content=line).body.decode("utf-8") + "\n")
+    return {"ok": True, "path": str(path)}
 
-    ts = fb.ts or datetime.now(timezone.utc).isoformat()
-    rec = {
-        "q": fb.q,
-        "answer": fb.answer,
-        "label": fb.label,
-        "sources": fb.sources,
-        "ts": ts,
-    }
-
-    # yyyymmdd.jsonl に追記
-    day = datetime.now(timezone.utc).strftime("%Y%m%d")
-    out = FEEDBACK_DIR / f"{day}.jsonl"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("a", encoding="utf-8") as f:
-        f.write(JSONResponse(rec).body.decode("utf-8"))
-        f.write("\n")
-
-    return {"ok": True, "path": str(out)}
-
-# ====== 再インデックス用フラグ ======
 @app.post("/admin/reindex")
-def admin_reindex(
-    force: bool = True,
-    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
-):
-    # 管理操作はトークンチェック
-    assert_token(x_api_key)
-
+def admin_reindex(force: bool = True, x_api_key: Optional[str] = Header(default=None)):
+    assert_token(x_api_key)  # API_TOKEN を設定している場合のみチェック
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     flag = FLAGS_DIR / f"reindex.{ts}.flag"
     flag.write_text("reindex\n", encoding="utf-8")
