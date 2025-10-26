@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-# ====== 環境・パス ======
+# ===== 環境・パス =====
 VERSION = os.getenv("VERSION", "dev")
 BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
 START_TS = time.time()
@@ -23,15 +23,16 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data")).resolve()
 FEEDBACK_DIR = DATA_DIR / "feedback"
 FLAGS_DIR = DATA_DIR / "flags"
 
+# 必要ディレクトリは必ず作成
 for p in (WEB_ROOT, FEEDBACK_DIR, FLAGS_DIR):
     p.mkdir(parents=True, exist_ok=True)
 
-API_TOKEN = os.getenv("API_TOKEN", "").strip()  # 空なら認証オフ
+API_TOKEN = os.getenv("API_TOKEN", "").strip()  # 空なら認証なし
 
-# ====== FastAPI ======
+# ===== FastAPI =====
 app = FastAPI(title="gov-data-poc", version=VERSION)
 
-# ---- 静的配信（index.html があれば / と /index.html で返す）----
+# ---- 静的配信（index.html があれば / と /index.html を返す）----
 if (WEB_ROOT / "index.html").exists():
     app.mount("/static", StaticFiles(directory=str(WEB_ROOT), html=True), name="static")
 
@@ -49,6 +50,7 @@ else:
 
 # ---- 認証ヘルパ ----
 def _require(x_api_key: Optional[str]) -> None:
+    # API_TOKEN が設定されている時だけチェック
     if API_TOKEN and x_api_key != API_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
 
@@ -62,7 +64,7 @@ def health():
         "uptime_sec": round(time.time() - START_TS, 2),
     }
 
-# ---- Ask ----
+# ---- /ask ----
 class AskResponse(BaseModel):
     q: str
     lang: str
@@ -78,7 +80,7 @@ def ask(
     _require(x_api_key)
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
-# ---- Feedback ----
+# ---- /feedback ----
 class FeedbackIn(BaseModel):
     q: str
     answer: str
@@ -99,7 +101,7 @@ def feedback(
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return JSONResponse({"ok": True, "path": str(out)})
 
-# ---- Reindex（フラグ作成）----
+# ---- /admin/reindex（フラグ作成）----
 @app.post("/admin/reindex")
 def admin_reindex(
     force: bool = True,
