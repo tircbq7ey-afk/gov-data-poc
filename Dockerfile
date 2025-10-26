@@ -1,3 +1,4 @@
+# Dockerfile
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -8,17 +9,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 依存（requirements.txt が無ければ FastAPI/uvicorn を直接入れる）
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt || \
-    pip install --no-cache-dir fastapi "uvicorn[standard]"
+# 依存（FastAPI + Uvicorn）
+RUN pip install --no-cache-dir fastapi uvicorn
 
-# 必要ディレクトリ
+# 必要なディレクトリ
 RUN mkdir -p /app/www /app/data/feedback /app/data/flags
 
-# アプリ・Web
-COPY qa_service.py /app/qa_service.py
-# ローカルの app/www を丸ごと（index.html をここに置く）
+# アプリ & Web
+COPY app/qa_service.py /app/qa_service.py
+# Web一式（index.html があればここに）
 COPY app/www /app/www
 
 EXPOSE 8010
