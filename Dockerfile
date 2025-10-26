@@ -8,16 +8,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 依存
-RUN pip install --no-cache-dir fastapi==0.112.0 uvicorn[standard]==0.30.0
+# 依存（requirements.txt が無ければ FastAPI/uvicorn を直接入れる）
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt || \
+    pip install --no-cache-dir fastapi "uvicorn[standard]"
 
 # 必要ディレクトリ
 RUN mkdir -p /app/www /app/data/feedback /app/data/flags
 
-# アプリ
-COPY app/qa_service.py /app/qa_service.py
-# 静的ファイル（index.html をここに）
-COPY app/www/ /app/www/
+# アプリ・Web
+COPY qa_service.py /app/qa_service.py
+# ローカルの app/www を丸ごと（index.html をここに置く）
+COPY app/www /app/www
 
 EXPOSE 8010
 CMD ["uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
