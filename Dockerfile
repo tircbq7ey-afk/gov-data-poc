@@ -1,19 +1,17 @@
+# ./Dockerfile
 FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# ランタイムのみ最小限
-RUN pip install --no-cache-dir fastapi uvicorn
+RUN pip install --no-cache-dir fastapi uvicorn[standard]
 
-# アプリ本体
-COPY ./app/qa_service.py /app/qa_service.py
+COPY qa_service.py /app/qa_service.py
 
-# curl はデバッグ用に入れておくと便利
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
+# データ置き場
+RUN mkdir -p /app/data/feedback /app/data/flags
 
-ENV PYTHONUNBUFFERED=1
-
-# ポート 8010 で待受（nginx からプロキシされる）
+EXPOSE 8010
 CMD ["uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
