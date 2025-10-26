@@ -1,4 +1,7 @@
 :80 {
-	encode zstd gzip
-	reverse_proxy app:8010
+    # すべて FastAPI へリバースプロキシ
+    reverse_proxy app:8010
+    # 必要なら静的配信をCaddy側で行う場合（今回は FastAPI 側で /index.html を返すので不要）
+    # root * /app/www
+    # file_server
 }
