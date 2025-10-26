@@ -1,29 +1,23 @@
 version: "3.9"
-
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: gov-data-poc-app-1
     environment:
-      # ここで API_TOKEN を配布。空にすると認証不要にできます。
-      API_TOKEN: "changeme-local-token"
-      VERSION: "dev"
+      - API_TOKEN=changeme-local-token
+      - VERSION=dev
+      - BUILD_TIME=unknown
     volumes:
-      # ホスト ./data をコンテナ /app/data にバインド
       - ./data:/app/data
-      # アプリソース（編集が多い場合は bind でも OK。prod は COPY 済みで十分）
-      - ./app/qa_service.py:/app/qa_service.py
     expose:
       - "8010"
 
   proxy:
-    image: nginx:alpine
+    image: nginx:1.25-alpine
     container_name: gov-data-poc-proxy-1
     depends_on:
       - app
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
