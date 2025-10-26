@@ -1,27 +1,18 @@
-version: "3.9"
-
+version: "3.8"
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
     image: gov-data-poc-app:local
+    ports:
+      - "8010:8010"
     environment:
+      - API_TOKEN=changeme-local-token
       - APP_PORT=8010
       - WEB_ROOT=/app/www
       - DATA_DIR=/app/data
-      - API_TOKEN=changeme-local-token
     volumes:
       - ./data:/app/data
       - ./app/www:/app/www
-    expose:
-      - "8010"
-
-  proxy:
-    image: nginx:1.27
-    depends_on:
-      - app
-    ports:
-      - "8080:80"
-    volumes:
-      - ./nginx:/etc/nginx/conf.d:ro
+    restart: unless-stopped
