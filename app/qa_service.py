@@ -1,14 +1,16 @@
 import os
 import json
 import time
-from datetime import datetime
 from typing import Optional, Dict, Any, List
+from datetime import datetime
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-# -------- settings --------
+# =========================
+# Settings
+# =========================
 API_TOKEN = os.getenv("API_TOKEN", "changeme-local-token").strip()
 VERSION = os.getenv("VERSION", "dev")
 BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
@@ -16,19 +18,22 @@ START_TS = time.time()
 
 app = FastAPI(title="gov-data-poc", version=VERSION)
 
+
 def _require(x_api_key: Optional[str]) -> None:
-    """
-    認証が有効なとき(API_TOKENが空でない)は x-api-key を検証。
-    """
+    # API_TOKEN が空でなければチェック。空なら認証不要。
     if API_TOKEN and x_api_key != API_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-# -------- models --------
+
+# =========================
+# Models
+# =========================
 class AskResponse(BaseModel):
     q: str
     lang: str
     answer: str
     sources: List[str] = Field(default_factory=list)
+
 
 class FeedbackIn(BaseModel):
     q: str
@@ -37,10 +42,14 @@ class FeedbackIn(BaseModel):
     sources: List[str] = Field(default_factory=list)
     lang: str = "ja"
 
+
 class ReindexIn(BaseModel):
     force: bool = False
 
-# -------- endpoints --------
+
+# =========================
+# Routes
+# =========================
 @app.get("/health")
 def health():
     return {
@@ -50,33 +59,35 @@ def health():
         "uptime_sec": round(time.time() - START_TS, 2),
     }
 
+
 @app.get("/")
 def root():
     return {"ok": True, "service": "gov-data-poc", "version": VERSION}
 
-@app.get("/ask", response_model=AskResponse)
+
+# /ask は GET のみ（POST は 405 になります）
+@app.get("/ask", response_model=AskResponse, summary="Ask")
 def ask(
     q: str = Query(..., title="Q"),
     lang: str = Query("ja", title="Lang"),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
-    # 認証（API_TOKENが設定されている場合のみチェック）
     _require(x_api_key)
-
-    # ここではダミー回答（接続先LLM/ベクタDBがまだ無い前提）
+    # ここは PoC：質問をそのままエコーするダミー回答
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
-@app.post("/feedback")
+
+@app.post("/feedback", summary="Feedback")
 def feedback(
     body: FeedbackIn,
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
 
-    # ./data/feedback/ に日毎の jsonl を追記
-    path = "./data/feedback"
-    os.makedirs(path, exist_ok=True)
-    out = os.path.join(path, f"{datetime.utcnow():%Y%m%d}.jsonl")
+    # 保存先: ./data/feedback/YYYYMMDD.jsonl （ホストに bind mount）
+    base = "./data/feedback"
+    os.makedirs(base, exist_ok=True)
+    out = os.path.join(base, f"{datetime.utcnow():%Y%m%d}.jsonl")
 
     rec: Dict[str, Any] = body.model_dump()
     rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -86,35 +97,40 @@ def feedback(
 
     return JSONResponse({"ok": True, "path": out})
 
-@app.post("/admin/reindex")
+
+# 追加: /admin/reindex を POST で提供
+@app.post("/admin/reindex", summary="Reindex")
 def reindex(
-    body: ReindexIn,
+    body: ReindexIn = Body(default=ReindexIn()),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     _require(x_api_key)
 
-    # インデックス作成の代わりにフラグファイルを作る
+    # reindex のフラグディレクトリを必ず作成
     flags_dir = "./data/flags"
     os.makedirs(flags_dir, exist_ok=True)
-    flag_path = os.path.join(flags_dir, "reindexed.ok")
 
-    payload = {
-        "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "force": body.force,
-        "version": VERSION,
-    }
+    # フラグファイル（タイムスタンプ付き）を作るだけの簡易実装
+    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    flag_name = f"reindex-{ts}{'-force' if body.force else ''}.flag"
+    flag_path = os.path.join(flags_dir, flag_name)
+
     with open(flag_path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False))
+        f.write(json.dumps({"ts": ts, "force": body.force}))
 
-    return {
-        "ok": True,
-        "message": "reindexed",
-        "flag": flag_path,
-        "payload": payload,
-    }
+    # ついでに feedback ファイルの一覧を返す（確認用）
+    feedback_dir = "./data/feedback"
+    files = []
+    if os.path.isdir(feedback_dir):
+        files = sorted(
+            [os.path.join(feedback_dir, x) for x in os.listdir(feedback_dir)],
+            reverse=True,
+        )
 
-# -------- local run --------
-if __name__ == "__main__":
-    # uvicorn 起動 (Docker では CMD/ENTRYPOINT で呼ばれる想定でもOK)
-    import uvicorn
-    uvicorn.run("qa_service:app", host="0.0.0.0", port=8010, reload=False)
+    return JSONResponse(
+        {
+            "ok": True,
+            "flag": flag_path,
+            "feedback_files": files,
+        }
+    )
