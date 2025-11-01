@@ -1,8 +1,9 @@
-# app/qa_service.py
+# /app/qa_service.py
 from __future__ import annotations
-import os, json, time, glob
+import os, time, json
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -12,16 +13,20 @@ VERSION = os.getenv("VERSION", "dev")
 BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
 START_TS = time.time()
 
-DATA_DIR = os.path.abspath("./data")
+# base paths (コンテナ内)
+ROOT_DIR = "/app"
+DATA_DIR = os.path.join(ROOT_DIR, "data")
 FEEDBACK_DIR = os.path.join(DATA_DIR, "feedback")
 FLAGS_DIR = os.path.join(DATA_DIR, "flags")
 
-os.makedirs(FEEDBACK_DIR, exist_ok=True)  # 書き込み先は起動時に用意
-# FLAGS_DIR は reindex 時に作る
+# 必要なディレクトリを起動時に作成
+for p in (DATA_DIR, FEEDBACK_DIR, FLAGS_DIR):
+    os.makedirs(p, exist_ok=True)
 
 app = FastAPI(title="gov-data-poc", version=VERSION)
 
 def _require(x_api_key: Optional[str]) -> None:
+    # API_TOKEN を設定した場合のみチェックする（未設定ならスキップ）
     if API_TOKEN and x_api_key != API_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
 
@@ -38,6 +43,7 @@ def health():
 def root():
     return {"ok": True, "service": "gov-data-poc", "version": VERSION}
 
+# --- /ask: ダミー回答（今はスタブ） ---
 class AskResponse(BaseModel):
     q: str
     lang: str
@@ -45,14 +51,12 @@ class AskResponse(BaseModel):
     sources: List[str] = Field(default_factory=list)
 
 @app.get("/ask", response_model=AskResponse)
-def ask(
-    q: str = Query(...),
-    lang: str = Query("ja"),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-):
+def ask(q: str = Query(...), lang: str = Query("ja"), x_api_key: Optional[str] = Header(None, alias="x-api-key")):
     _require(x_api_key)
+    # 実サービス実装前はスタブ回答
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
+# --- /feedback: JSONL 追記 ---
 class FeedbackIn(BaseModel):
     q: str
     answer: str
@@ -63,37 +67,27 @@ class FeedbackIn(BaseModel):
 @app.post("/feedback")
 def feedback(body: FeedbackIn, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
     _require(x_api_key)
-    os.makedirs(FEEDBACK_DIR, exist_ok=True)
-    out = os.path.join(FEEDBACK_DIR, f"{datetime.utcnow():%Y%m%d}.jsonl")
+    # 日付別 jsonl
+    fn = datetime.utcnow().strftime("%Y%m%d") + ".jsonl"
+    out = os.path.join(FEEDBACK_DIR, fn)
     rec: Dict[str, Any] = body.model_dump()
     rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    os.makedirs(FEEDBACK_DIR, exist_ok=True)
     with open(out, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    return JSONResponse({"ok": True, "path": out})
+    return JSONResponse({"ok": True, "path": f"./data/feedback/{fn}"})
 
-class ReindexOut(BaseModel):
-    ok: bool
-    feedback_files: int
-    feedback_rows: int
-    flags_dir: str
+# --- /admin/reindex: インデックス再構築トリガ（フラグファイルを作成） ---
+class ReindexIn(BaseModel):
+    force: bool = False
 
-@app.post("/admin/reindex", response_model=ReindexOut)
-def admin_reindex(
-    force: bool = True,  # 将来使う想定のダミー引数
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-):
+@app.post("/admin/reindex")
+def admin_reindex(body: ReindexIn, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
     _require(x_api_key)
     os.makedirs(FLAGS_DIR, exist_ok=True)
-
-    files = sorted(glob.glob(os.path.join(FEEDBACK_DIR, "*.jsonl")))
-    row_count = 0
-    for fp in files:
-        with open(fp, "r", encoding="utf-8") as f:
-            for _ in f:
-                row_count += 1
-
-    # reindex が走った印としてタイムスタンプを書き出す
-    with open(os.path.join(FLAGS_DIR, "reindexed_at.txt"), "w", encoding="utf-8") as f:
-        f.write(datetime.utcnow().isoformat() + "Z")
-
-    return ReindexOut(ok=True, feedback_files=len(files), feedback_rows=row_count, flags_dir=FLAGS_DIR)
+    flag = os.path.join(FLAGS_DIR, "reindexed_at.txt")
+    with open(flag, "w", encoding="utf-8") as f:
+        f.write(datetime.utcnow().isoformat(timespec="seconds") + "Z")
+        if body.force:
+            f.write("\nforce=true")
+    return {"ok": True, "flag": "/app/data/flags/reindexed_at.txt"}
