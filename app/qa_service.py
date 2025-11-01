@@ -1,28 +1,20 @@
-# app/qa_service.py
 from __future__ import annotations
 import os, json, time
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime
 from typing import Optional, Dict, Any, List
-
 from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-
-# ---- env / paths
-APP_PORT = int(os.getenv("APP_PORT", "8010"))
-WEB_ROOT = Path(os.getenv("WEB_ROOT", "/app/www")).resolve()
-DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data")).resolve()
-FEEDBACK_DIR = DATA_DIR / "feedback"
-FLAGS_DIR = DATA_DIR / "flags"
-
-for p in (WEB_ROOT, FEEDBACK_DIR, FLAGS_DIR):
-    p.mkdir(parents=True, exist_ok=True)
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
 VERSION = os.getenv("VERSION", "dev")
 BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
+APP_PORT = int(os.getenv("APP_PORT", "8010"))
+
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+FEEDBACK_DIR = os.path.join(DATA_DIR, "feedback")
+
+os.makedirs(FEEDBACK_DIR, exist_ok=True)
 START_TS = time.time()
 
 app = FastAPI(title="gov-data-poc", version=VERSION)
@@ -31,23 +23,6 @@ def _require(x_api_key: Optional[str]) -> None:
     if API_TOKEN and x_api_key != API_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-# ---- static (index.html があれば / と /index.html で返す)
-if (WEB_ROOT / "index.html").exists():
-    app.mount("/static", StaticFiles(directory=str(WEB_ROOT), html=True), name="static")
-
-    @app.get("/", include_in_schema=False)
-    def root_html():
-        return FileResponse(WEB_ROOT / "index.html", media_type="text/html")
-
-    @app.get("/index.html", include_in_schema=False)
-    def index_alias():
-        return FileResponse(WEB_ROOT / "index.html", media_type="text/html")
-else:
-    @app.get("/")
-    def root_json():
-        return {"ok": True, "service": "gov-data-poc", "version": VERSION}
-
-# ---- health
 @app.get("/health")
 def health():
     return {
@@ -57,7 +32,10 @@ def health():
         "uptime_sec": round(time.time() - START_TS, 2),
     }
 
-# ---- ask (ダミー)
+@app.get("/")
+def root():
+    return {"ok": True, "service": "gov-data-poc", "version": VERSION}
+
 class AskResponse(BaseModel):
     q: str
     lang: str
@@ -69,7 +47,6 @@ def ask(q: str = Query(...), lang: str = Query("ja"), x_api_key: Optional[str] =
     _require(x_api_key)
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
-# ---- feedback -> /app/data/feedback/YYYYMMDD.jsonl
 class FeedbackIn(BaseModel):
     q: str
     answer: str
@@ -80,23 +57,27 @@ class FeedbackIn(BaseModel):
 @app.post("/feedback")
 def feedback(body: FeedbackIn, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
     _require(x_api_key)
-    FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-    out = FEEDBACK_DIR / f"{datetime.utcnow():%Y%m%d}.jsonl"
-
+    os.makedirs(FEEDBACK_DIR, exist_ok=True)
+    out = os.path.join(FEEDBACK_DIR, f"{datetime.utcnow():%Y%m%d}.jsonl")
     rec: Dict[str, Any] = body.model_dump()
     rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-
-    with out.open("a", encoding="utf-8") as f:
+    with open(out, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return JSONResponse({"ok": True, "path": out})
 
-    return JSONResponse({"ok": True, "path": str(out)})
+# ★ これが無かったため 404 になっていた
+class ReindexIn(BaseModel):
+    force: bool = False
 
-# ---- admin/reindex -> /app/data/flags/reindex.YYYYMMDD-HHMMSS.flag
 @app.post("/admin/reindex")
-def admin_reindex(force: bool = True, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
+def admin_reindex(body: ReindexIn, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
     _require(x_api_key)
-    FLAGS_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    flag = FLAGS_DIR / f"reindex.{ts}.flag"
-    flag.write_text("reindex\n", encoding="utf-8")
-    return {"ok": True, "flag": str(flag)}
+    # 実処理はダミー。最低限「今日の jsonl があるか」をチェックして件数を返す。
+    today = datetime.utcnow().strftime("%Y%m%d")
+    path = os.path.join(FEEDBACK_DIR, f"{today}.jsonl")
+    count = 0
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for _ in f:
+                count += 1
+    return {"ok": True, "indexed": count, "feedback_file": path}
