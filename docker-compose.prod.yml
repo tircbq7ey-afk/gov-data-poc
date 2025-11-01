@@ -5,36 +5,29 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: gov-data-poc-app:local
     environment:
-      - WEB_ROOT=/app/www
-      - DATA_DIR=/app/data
-      - API_KEY=changeme-local-token
+      APP_PORT: "8010"
+      WEB_ROOT: /app/www
+      DATA_DIR: /app/data
+      API_TOKEN: "${API_TOKEN:-changeme-local-token}"
     volumes:
-      - ./www:/app/www:ro
       - ./data:/app/data
-      - ./app:/app:ro
-    expose:
-      - "8010"
+      - ./www:/app/www:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8010/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8010/health"]
       interval: 10s
       timeout: 3s
-      retries: 10
+      retries: 5
+    restart: unless-stopped
 
   proxy:
-    image: nginx:1.27
+    image: nginx:1.27-alpine
     depends_on:
       app:
         condition: service_healthy
     ports:
       - "8080:80"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./www:/usr/share/nginx/html:ro
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
+    restart: unless-stopped
