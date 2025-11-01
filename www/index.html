@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8"/>
+<title>gov-data-poc</title>
+<h1>gov-data-poc</h1>
+<p>質問してみる：</p>
+<input id="q" value="申請書の提出方法"><button id="btn">Ask</button>
+<pre id="out"></pre>
+<script>
+const token = 'changeme-local-token';
+btn.onclick = async () => {
+  const q = document.getElementById('q').value;
+  const res = await fetch(`/ask?q=${encodeURIComponent(q)}&lang=ja`, {
+    headers: {'x-api-key': token}
+  });
+  document.getElementById('out').textContent = await res.text();
+};
+</script>
