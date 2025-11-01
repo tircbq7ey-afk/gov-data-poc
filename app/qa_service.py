@@ -14,24 +14,29 @@ for p in (DATA_DIR, FEEDBACK_DIR, FLAGS_DIR):
 
 @app.get("/health")
 def health():
-    # 簡易ヘルス
-    return {"ok": True, "version": "dev"}
+    return {"ok": True, "service": "gov-data-poc", "version": "dev"}
+
+@app.get("/openapi.json")
+def openapi_json():
+    # OpenAPI が必要なら FastAPI の標準生成を利用してもOK
+    return app.openapi()
 
 @app.post("/feedback")
 def feedback(payload: dict):
-    """今日の jsonl に1行追記"""
+    """当日ファイルへ1行追記"""
     out = FEEDBACK_DIR / f"{datetime.now().strftime('%Y%m%d')}.jsonl"
-    payload = dict(payload)
-    payload["ts"] = datetime.now(timezone.utc).isoformat()
+    row = dict(payload)
+    row["ts"] = datetime.now(timezone.utc).isoformat()
+    out.write_text("", encoding="utf-8") if not out.exists() else None
     with out.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
     return {"ok": True, "path": f"./data/feedback/{out.name}"}
 
 @app.post("/admin/reindex")
 def admin_reindex(force: bool = Body(False)):
     """
-    疑似リインデックス: 実際の処理の代わりにフラグファイルを更新。
-    クラスタやバッチに渡すならここでキックする。
+    疑似リインデックス: 実運用ではここでワーカーを起動。
+    ここではフラグを更新して可視化するだけ。
     """
     flag = FLAGS_DIR / "reindexed_at.txt"
     flag.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
