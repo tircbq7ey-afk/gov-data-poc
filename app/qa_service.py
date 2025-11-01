@@ -1,10 +1,14 @@
-# app/qa_service.py
-from fastapi import FastAPI, Body
+from __future__ import annotations
+
+import json
 from datetime import datetime, timezone
 from pathlib import Path
-import json
+from typing import List, Optional
 
-app = FastAPI(title="gov-data-poc", version="dev")
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+APP_START = datetime.now(timezone.utc)
 
 DATA_DIR = Path("/app/data")
 FEEDBACK_DIR = DATA_DIR / "feedback"
@@ -12,32 +16,75 @@ FLAGS_DIR = DATA_DIR / "flags"
 for p in (DATA_DIR, FEEDBACK_DIR, FLAGS_DIR):
     p.mkdir(parents=True, exist_ok=True)
 
-@app.get("/health")
+class AskResponse(BaseModel):
+    q: str
+    lang: str = "ja"
+    answer: str
+    sources: List[str] = []
+
+class FeedbackIn(BaseModel):
+    q: str
+    answer: str
+    sources: List[str] = Field(default_factory=list)
+    label: str = "good"
+    lang: str = "ja"
+
+class FeedbackOut(BaseModel):
+    ok: bool = True
+    path: str
+
+class HealthOut(BaseModel):
+    ok: bool
+    service: str = "gov-data-poc"
+    version: str = "dev"
+    build_time: str = "unknown"
+    uptime_sec: float
+
+app = FastAPI(title="gov-data-poc")
+
+@app.get("/health", response_model=HealthOut)
 def health():
-    return {"ok": True, "service": "gov-data-poc", "version": "dev"}
+    return HealthOut(
+        ok=True,
+        uptime_sec=(datetime.now(timezone.utc) - APP_START).total_seconds(),
+    )
 
-@app.get("/openapi.json")
-def openapi_json():
-    # OpenAPI が必要なら FastAPI の標準生成を利用してもOK
-    return app.openapi()
+@app.get("/ask")
+def ask(q: str, lang: str = "ja"):
+    # デモ用の固定応答（必要に応じてRAG等に差し替え）
+    ans = "オンラインで申請できます。"
+    return AskResponse(q=q, lang=lang, answer=ans, sources=[])
 
-@app.post("/feedback")
-def feedback(payload: dict):
-    """当日ファイルへ1行追記"""
-    out = FEEDBACK_DIR / f"{datetime.now().strftime('%Y%m%d')}.jsonl"
-    row = dict(payload)
-    row["ts"] = datetime.now(timezone.utc).isoformat()
-    out.write_text("", encoding="utf-8") if not out.exists() else None
-    with out.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    return {"ok": True, "path": f"./data/feedback/{out.name}"}
+@app.post("/feedback", response_model=FeedbackOut)
+def feedback(fb: FeedbackIn):
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    jpath = FEEDBACK_DIR / f"{today}.jsonl"
+    rec = {
+        "q": fb.q,
+        "answer": fb.answer,
+        "sources": fb.sources,
+        "label": fb.label,
+        "lang": fb.lang,
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    with jpath.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    # 取り回し用：最新取り込みフラグを消す（再インデックス待ち）
+    flag = FLAGS_DIR / "reindexed_at.txt"
+    if flag.exists():
+        flag.unlink(missing_ok=True)
+    return FeedbackOut(ok=True, path=str(jpath).replace("/app", "."))
+
+class ReindexIn(BaseModel):
+    force: Optional[bool] = False
 
 @app.post("/admin/reindex")
-def admin_reindex(force: bool = Body(False)):
+def admin_reindex(body: ReindexIn):
     """
-    疑似リインデックス: 実運用ではここでワーカーを起動。
-    ここではフラグを更新して可視化するだけ。
+    ここで実際のインデックス更新処理を行う想定。
+    デモとして flags/reindexed_at.txt を更新し、200を返す。
     """
-    flag = FLAGS_DIR / "reindexed_at.txt"
-    flag.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
-    return {"ok": True, "forced": bool(force), "flag": str(flag)}
+    (FLAGS_DIR).mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    (FLAGS_DIR / "reindexed_at.txt").write_text(stamp + "\n", encoding="utf-8")
+    return {"ok": True, "reindexed_at": stamp, "force": bool(body.force)}
