@@ -1,15 +1,20 @@
 FROM python:3.11-slim
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# ランタイムに必要なものを最小限インストール
-RUN pip install --no-cache-dir fastapi uvicorn[standard]
+# 依存
+RUN pip install --no-cache-dir fastapi uvicorn[standard] pydantic[dotenv]
 
-# アプリ本体
-COPY app/qa_service.py /app/qa_service.py
+# アプリ配置
+COPY app ./app
+COPY www ./www
 
-# データ置き場（コンテナ内）※ 実体は compose のボリュームでホストにマウント
+# データ用ディレクトリ（初回から存在させる）
 RUN mkdir -p /app/data/feedback /app/data/flags
-
-EXPOSE 8010
-CMD ["python", "-m", "uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
