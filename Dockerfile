@@ -1,22 +1,20 @@
-# Dockerfile
 FROM python:3.11-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    APP_PORT=8010 \
-    WEB_ROOT=/app/www \
-    DATA_DIR=/app/data
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# 軽量・再現性重視
+RUN pip install --no-cache-dir fastapi uvicorn
 
-# アプリ本体
-COPY app/qa_service.py /app/qa_service.py
+# アプリ配置
+COPY ./qa_service.py /app/qa_service.py
 
-# 静的ファイル（任意: app/www/index.html がある場合に配信）
-COPY app/www /app/www
+# データ置き場
+ENV DATA_DIR=/app/data
+RUN mkdir -p /app/data/feedback
 
-EXPOSE 8010
-CMD ["uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
+# ポートは環境変数で（デフォルト 8010）
+ENV APP_PORT=8010
+ENV VERSION=dev
+ENV BUILD_TIME=unknown
+
+CMD ["python", "-m", "uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
