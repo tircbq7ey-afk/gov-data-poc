@@ -1,5 +1,6 @@
+# app/qa_service.py
 from __future__ import annotations
-import os, json, time
+import os, json, time, glob
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -9,13 +10,14 @@ from pydantic import BaseModel, Field
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
 VERSION = os.getenv("VERSION", "dev")
 BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
-APP_PORT = int(os.getenv("APP_PORT", "8010"))
-
-DATA_DIR = os.getenv("DATA_DIR", "/app/data")
-FEEDBACK_DIR = os.path.join(DATA_DIR, "feedback")
-
-os.makedirs(FEEDBACK_DIR, exist_ok=True)
 START_TS = time.time()
+
+DATA_DIR = os.path.abspath("./data")
+FEEDBACK_DIR = os.path.join(DATA_DIR, "feedback")
+FLAGS_DIR = os.path.join(DATA_DIR, "flags")
+
+os.makedirs(FEEDBACK_DIR, exist_ok=True)  # 書き込み先は起動時に用意
+# FLAGS_DIR は reindex 時に作る
 
 app = FastAPI(title="gov-data-poc", version=VERSION)
 
@@ -43,7 +45,11 @@ class AskResponse(BaseModel):
     sources: List[str] = Field(default_factory=list)
 
 @app.get("/ask", response_model=AskResponse)
-def ask(q: str = Query(...), lang: str = Query("ja"), x_api_key: Optional[str] = Header(None, alias="x-api-key")):
+def ask(
+    q: str = Query(...),
+    lang: str = Query("ja"),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
     _require(x_api_key)
     return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
 
@@ -65,19 +71,29 @@ def feedback(body: FeedbackIn, x_api_key: Optional[str] = Header(None, alias="x-
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return JSONResponse({"ok": True, "path": out})
 
-# ★ これが無かったため 404 になっていた
-class ReindexIn(BaseModel):
-    force: bool = False
+class ReindexOut(BaseModel):
+    ok: bool
+    feedback_files: int
+    feedback_rows: int
+    flags_dir: str
 
-@app.post("/admin/reindex")
-def admin_reindex(body: ReindexIn, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
+@app.post("/admin/reindex", response_model=ReindexOut)
+def admin_reindex(
+    force: bool = True,  # 将来使う想定のダミー引数
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
     _require(x_api_key)
-    # 実処理はダミー。最低限「今日の jsonl があるか」をチェックして件数を返す。
-    today = datetime.utcnow().strftime("%Y%m%d")
-    path = os.path.join(FEEDBACK_DIR, f"{today}.jsonl")
-    count = 0
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
+    os.makedirs(FLAGS_DIR, exist_ok=True)
+
+    files = sorted(glob.glob(os.path.join(FEEDBACK_DIR, "*.jsonl")))
+    row_count = 0
+    for fp in files:
+        with open(fp, "r", encoding="utf-8") as f:
             for _ in f:
-                count += 1
-    return {"ok": True, "indexed": count, "feedback_file": path}
+                row_count += 1
+
+    # reindex が走った印としてタイムスタンプを書き出す
+    with open(os.path.join(FLAGS_DIR, "reindexed_at.txt"), "w", encoding="utf-8") as f:
+        f.write(datetime.utcnow().isoformat() + "Z")
+
+    return ReindexOut(ok=True, feedback_files=len(files), feedback_rows=row_count, flags_dir=FLAGS_DIR)
