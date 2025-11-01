@@ -1,16 +1,17 @@
 <!doctype html>
 <html lang="ja">
-<head>
-  <meta charset="utf-8" />
-  <title>gov-data-poc</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-</head>
-<body>
-  <h1>gov-data-poc</h1>
-  <p>このページは nginx から配信されています。</p>
-  <ul>
-    <li><a href="/health">/health</a></li>
-    <li><a href="/docs">/docs (FastAPI Swagger)</a></li>
-  </ul>
-</body>
+<meta charset="utf-8" />
+<title>gov-data-poc</title>
+<pre id="out">loading...</pre>
+<script>
+(async () => {
+  const out = document.getElementById('out');
+  try {
+    const h = await fetch('/health').then(r => r.json());
+    out.textContent = JSON.stringify(h);
+  } catch (e) {
+    out.textContent = 'health error: ' + (e?.message || e);
+  }
+})();
+</script>
 </html>
