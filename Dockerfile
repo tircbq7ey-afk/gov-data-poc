@@ -1,26 +1,15 @@
-# Dockerfile
 FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-# 必要ライブラリ
-RUN pip install --no-cache-dir fastapi uvicorn[standard]
-
-# 作業ディレクトリ
 WORKDIR /app
 
-# アプリと静的ファイルをコピー（www は volume で差し替え予定でもOK）
-COPY app ./app
-COPY www ./www
+# ランタイムに必要なものを最小限インストール
+RUN pip install --no-cache-dir fastapi uvicorn[standard]
 
-# データディレクトリ（volumeで上書き）
-RUN mkdir -p /app/data
+# アプリ本体
+COPY app/qa_service.py /app/qa_service.py
 
-ENV APP_PORT=8010 \
-    WEB_ROOT=/app/www \
-    DATA_DIR=/app/data \
-    API_TOKEN=changeme-local-token
+# データ置き場（コンテナ内）※ 実体は compose のボリュームでホストにマウント
+RUN mkdir -p /app/data/feedback /app/data/flags
 
 EXPOSE 8010
-CMD ["python", "-m", "uvicorn", "app.qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
+CMD ["python", "-m", "uvicorn", "qa_service:app", "--host", "0.0.0.0", "--port", "8010"]
