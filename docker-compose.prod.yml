@@ -1,5 +1,4 @@
 version: "3.9"
-
 services:
   app:
     build:
@@ -7,14 +6,15 @@ services:
       dockerfile: Dockerfile
     image: gov-data-poc-app:local
     environment:
-      APP_PORT: "8010"
-      WEB_ROOT: /app/www
-      DATA_DIR: /app/data
-      VERSION: "dev"
-      API_TOKEN: "changeme-local-token"   # ←必要に応じ変更
+      - APP_PORT=8010
+      - WEB_ROOT=/app/www
+      - DATA_DIR=/app/data
+      - VERSION=dev
+      - BUILD_TIME=${BUILD_TIME:-unknown}
+      - API_TOKEN=${API_TOKEN:-changeme-local-token}
     volumes:
-      - ./app/www:/app/www:ro
-      - ./data:/app/data
+      - ./app/www:/app/www:ro        # index.html をホストから差し替えたい場合
+      - ./data:/app/data             # ← feedback と flags を永続化（重要）
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8010/health"]
       interval: 10s
@@ -23,9 +23,10 @@ services:
 
   proxy:
     image: nginx:1.27
-    depends_on:
-      - app
     ports:
       - "8080:80"
+    depends_on:
+      app:
+        condition: service_healthy
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
