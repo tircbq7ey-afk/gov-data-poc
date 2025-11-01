@@ -1,88 +1,86 @@
-from __future__ import annotations
+from fastapi import FastAPI, Header, HTTPException, Body
+from fastapi.responses import JSONResponse, FileResponse
+from pathlib import Path
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
+import json
+import os
 
-import os, time, json
-from datetime import datetime
-from typing import Optional, Dict, Any, List
+APP = FastAPI(title="gov-data-poc", docs_url="/docs", redoc_url=None)
 
-from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+# --- Paths
+WEB_ROOT   = Path(os.getenv("WEB_ROOT", "/app/www")).resolve()
+DATA_DIR   = Path(os.getenv("DATA_DIR", "/app/data")).resolve()
+FB_DIR     = DATA_DIR / "feedback"
+FLAGS_DIR  = DATA_DIR / "flags"
 
-API_TOKEN  = os.getenv("API_TOKEN", "").strip()
-VERSION    = os.getenv("VERSION", "dev")
-BUILD_TIME = os.getenv("BUILD_TIME", "unknown")
-START_TS   = time.time()
+# --- Bootstrapping
+for p in (WEB_ROOT, DATA_DIR, FB_DIR, FLAGS_DIR):
+    p.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="gov-data-poc", version=VERSION)
+# --- Simple API key
+API_KEY = os.getenv("API_KEY", "changeme-local-token")
 
-def _require(x_api_key: Optional[str]) -> None:
-    # ローカルで API_TOKEN を空にしている場合は認証スキップ
-    if API_TOKEN and x_api_key != API_TOKEN:
+def require_api_key(x_api_key: Optional[str]):
+    if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-@app.get("/health")
-def health() -> Dict[str, Any]:
+# --- Health
+@APP.get("/health")
+def health():
+    return {"ok": True, "service": "gov-data-poc", "version": "dev"}
+
+# --- Ask (ダミー実装：そのまま返すだけ)
+@APP.get("/ask")
+def ask(q: str, lang: str = "ja", sources: Optional[List[str]] = None):
     return {
-        "ok": True,
-        "version": VERSION,
-        "build_time": BUILD_TIME,
-        "uptime_sec": round(time.time() - START_TS, 2),
+        "q": q,
+        "lang": lang,
+        "answer": f"[{lang}] 受領: {q}",
+        "sources": sources or [],
     }
 
-@app.get("/")
-def root() -> Dict[str, Any]:
-    return {"ok": True, "service": "gov-data-poc", "version": VERSION}
-
-class AskResponse(BaseModel):
-    q: str
-    lang: str
-    answer: str
-    sources: List[str] = Field(default_factory=list)
-
-@app.get("/ask", response_model=AskResponse)
-def ask(
-    q: str = Query(...),
-    lang: str = Query("ja"),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-) -> AskResponse:
-    _require(x_api_key)
-    return AskResponse(q=q, lang=lang, answer=f"[{lang}] 受理: {q}", sources=[])
-
-class FeedbackIn(BaseModel):
-    q: str
-    answer: str
-    label: str = "good"
-    lang: str = "ja"
-    sources: List[str] = Field(default_factory=list)
-
-@app.post("/feedback")
+# --- Feedback: JSONL 追記
+@APP.post("/feedback")
 def feedback(
-    body: FeedbackIn,
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    payload: Dict[str, Any] = Body(...),
+    x_api_key: Optional[str] = Header(None)
 ):
-    _require(x_api_key)
-    path = "./data/feedback"
-    os.makedirs(path, exist_ok=True)
-    out = os.path.join(path, f"{datetime.utcnow():%Y%m%d}.jsonl")
+    require_api_key(x_api_key)
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    record = {**payload, "ts": ts}
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    out = FB_DIR / f"{today}.jsonl"
+    with out.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return JSONResponse({"ok": True, "path": f"./data/feedback/{out.name}"})
 
-    rec: Dict[str, Any] = body.model_dump()
-    rec["ts"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-
-    with open(out, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
-    return JSONResponse({"ok": True, "path": out})
-
-# ★ 追加: 管理用のダミー reindex エンドポイント
-@app.post("/admin/reindex")
+# --- Admin: reindex（ダミー）
+#  - すべての JSONL をスキャンして件数を返す
+#  - フラグファイル /app/data/flags/reindexed_at.txt を更新
+@APP.post("/admin/reindex")
 def admin_reindex(
-    force: bool = False,
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    body: Dict[str, Any] = Body({"force": True}),
+    x_api_key: Optional[str] = Header(None)
 ):
-    _require(x_api_key)
-    flags_dir = "./data/flags"
-    os.makedirs(flags_dir, exist_ok=True)
-    marker = os.path.join(flags_dir, "reindexed_at.txt")
-    with open(marker, "w", encoding="utf-8") as f:
-        f.write(datetime.utcnow().isoformat(timespec="seconds") + "Z")
-    return {"ok": True, "force": force, "marker": marker}
+    require_api_key(x_api_key)
+    total = 0
+    files = sorted(FB_DIR.glob("*.jsonl"))
+    for fp in files:
+        with fp.open("r", encoding="utf-8") as f:
+            for _ in f:
+                total += 1
+
+    FLAGS_DIR.mkdir(parents=True, exist_ok=True)
+    flag = FLAGS_DIR / "reindexed_at.txt"
+    flag.write_text(datetime.now(timezone.utc).isoformat(timespec="seconds"), encoding="utf-8")
+
+    return {"ok": True, "indexed_files": len(files), "indexed_records": total, "flag": str(flag)}
+
+# --- 静的トップ（念のため）
+@APP.get("/")
+def root():
+    idx = WEB_ROOT / "index.html"
+    if idx.exists():
+        return FileResponse(idx)
+    return {"ok": True, "service": "gov-data-poc", "version": "dev"}
