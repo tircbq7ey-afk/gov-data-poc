@@ -1,48 +1,86 @@
 # v2/pipelines/ingest.py
 from __future__ import annotations
+
 import argparse
 import json
-from pathlib import Path
-from typing import List, Dict
+import os
+from dataclasses import dataclass
+from typing import List
 
-from app.store.vector import upsert  # PYTHONPATH=repo_root を前提
+# ---- 型定義 ---------------------------------------------------------------
+@dataclass
+class Seed:
+    url: str
+    type: str = "html"   # "pdf" or "html"
+    title: str = ""
+    published_at: str = ""
+    lang: str = "ja"
 
-def load_seed(seed_path: Path) -> List[Dict]:
+# ---- ユーティリティ --------------------------------------------------------
+def load_seed(path: str) -> List[Seed]:
     """
-    seed_urls.json を読み込む。UTF-8/BOM付きUTF-8 の両方に対応。
+    JSON を UTF-8(BOMあり/なし両対応)で読み込み、Seed配列を返す。
     """
-    # Windows で作った JSON が BOM 付きでも読めるように utf-8-sig
-    with seed_path.open("r", encoding="utf-8-sig") as f:
-        return json.load(f)
+    # まずは 'utf-8-sig'（BOMを自動で無視）で開く
+    with open(path, "r", encoding="utf-8-sig") as f:
+        data = json.load(f)
 
-def run(seed: Path) -> None:
-    seeds = load_seed(seed)
+    if not isinstance(data, list):
+        raise ValueError("seed file must be a JSON array")
 
-    # 想定スキーマ: [{url, type, title, published_at, lang}]
-    docs = []
+    seeds: List[Seed] = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"seed[{i}] is not an object")
+        url = item.get("url", "").strip()
+        if not url:
+            continue
+        seeds.append(
+            Seed(
+                url=url,
+                type=item.get("type", "html"),
+                title=item.get("title", "") or "",
+                published_at=item.get("published_at", "") or "",
+                lang=item.get("lang", "ja") or "ja",
+            )
+        )
+    return seeds
+
+def ensure_project_root() -> str:
+    """
+    v2/ 配下から実行されてもパスがブレないように、プロジェクト直下を返す。
+    （このファイルが v2/pipelines/ingest.py にある前提）
+    """
+    here = os.path.abspath(os.path.dirname(__file__))  # .../v2/pipelines
+    v2_dir = os.path.dirname(here)                      # .../v2
+    return v2_dir
+
+# ---- ダミー upsert（ベクトルDBが未接続でも通す） ---------------------------
+def upsert_dummy(seeds: List[Seed]) -> None:
+    # ここは後で実DBに差し替えればOK。今は確認用にログだけ出す。
+    print(f"[ingest] {len(seeds)} seeds loaded")
     for s in seeds:
-        docs.append({
-            "url": s["url"],
-            "type": s.get("type", "html"),
-            "title": s.get("title", ""),
-            "published_at": s.get("published_at", ""),
-            "lang": s.get("lang", "ja"),
-        })
+        print(f"  - ({s.type}) {s.url}")
 
-    # ベクタストアへ投入（実装は app/store/vector.py 側）
-    upsert(docs)
-    print(f"[ingest] upserted={len(docs)} from {seed}")
-
+# ---- メイン ---------------------------------------------------------------
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--seed", type=str, default="v2/pipelines/config/seed_urls.json")
-    args = p.parse_args()
+    project_root = ensure_project_root()
+    default_seed = os.path.join(project_root, "pipelines", "config", "seed_urls.json")
 
-    seed_path = Path(args.seed).resolve()
-    if not seed_path.exists():
-        raise FileNotFoundError(f"seed file not found: {seed_path}")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--seed",
+        default=default_seed,
+        help=f"seed json path (default: {default_seed})"
+    )
+    args = parser.parse_args()
 
-    run(seed_path)
+    path = os.path.abspath(args.seed)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"seed file not found: {path}")
+
+    seeds = load_seed(path)
+    upsert_dummy(seeds)
 
 if __name__ == "__main__":
     main()
