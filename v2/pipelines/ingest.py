@@ -11,15 +11,12 @@ from typing import Any, Dict, List
 from app.store.vector import upsert  # your vector store upsert
 # upsert(items: List[Dict[str, Any]]) を想定。items は各ドキュメントメタデータの配列。
 
-def load_seed(path: Path) -> List[Dict[str, Any]]:
-    """
-    seed_urls.json を読み込む。UTF-8 BOM を含む場合でも読み取れるよう utf-8-sig で開く。
-    """
-    with path.open("r", encoding="utf-8-sig") as f:
-        data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError("seed file must be a JSON array")
-    return data
+def load_seed(path: str | None = None) -> list[dict]:
+    import json, os
+    path = path or os.path.join(os.path.dirname(__file__), "config", "seed_urls.json")
+    # BOM付き/無しのどちらも受け付ける
+    with open(path, "r", encoding="utf-8-sig") as f:
+        return json.load(f)
 
 def normalize(item: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -76,3 +73,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
