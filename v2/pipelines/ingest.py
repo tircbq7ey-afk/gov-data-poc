@@ -1,62 +1,144 @@
-# v2/pipelines/ingest.py
-from __future__ import annotations
-import argparse
+# -*- coding: utf-8 -*-
+"""
+Seed URL から本文を取り出し、Chroma に埋め込んで保存する簡易インジェスト
+- HTML: requests + BeautifulSoup
+- PDF : PyMuPDF
+- 埋め込み: sentence-transformers 'all-MiniLM-L6-v2'
+- ストア: Chroma (ローカル)
+"""
+
 import json
-from pathlib import Path
-from typing import List, Dict, Any
+import os
+import re
+from dataclasses import dataclass
+from typing import Iterable, List, Dict
 
-# ベクタ格納が未実装でも動くようにoptional import
-try:
-    from app.store.vector import upsert  # type: ignore
-except Exception:
-    upsert = None  # ダミー
+import requests
+from bs4 import BeautifulSoup
 
-def load_seed(seed_path: Path) -> List[Dict[str, Any]]:
-    """
-    seed_urls.json を読み込む。UTF-8 with/without BOM の両方対応。
-    """
-    if not seed_path.exists():
-        raise FileNotFoundError(f"seed file not found: {seed_path}")
-    with seed_path.open("r", encoding="utf-8-sig") as f:
-        data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError("seed file must be a JSON array")
-    # 必須キーの薄いバリデーション
-    required = {"url", "type", "title", "lang"}
-    for i, item in enumerate(data):
-        if not isinstance(item, dict) or not required.issubset(item.keys()):
-            raise ValueError(f"seed[{i}] missing keys, required={required}")
-    return data
+import fitz  # PyMuPDF
+import chromadb
+from chromadb.utils import embedding_functions
 
-def run(seed_file: str) -> None:
-    seed_path = Path(seed_file).resolve()
-    seeds = load_seed(seed_path)
-    print(f"[ingest] loaded {len(seeds)} seeds from {seed_path}")
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.path.join(ROOT, "data")
+CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
+os.makedirs(CHROMA_DIR, exist_ok=True)
 
-    # upsert が用意されている環境のみ実行（なければドライラン）
-    if upsert is None:
-        print("[ingest] 'app.store.vector.upsert' not found -> dry-run only.")
-        for s in seeds:
-            print(f"  - {s['type']:4s} | {s['lang']} | {s['title']} | {s['url']}")
+MODEL_NAME = "all-MiniLM-L6-v2"
+embedder = embedding_functions.SentenceTransformerEmbeddingFunction(
+    model_name=MODEL_NAME
+)
+
+client = chromadb.PersistentClient(path=CHROMA_DIR)
+COLLECTION_NAME = "gov-v2"
+collection = client.get_or_create_collection(
+    name=COLLECTION_NAME,
+    embedding_function=embedder,
+    metadata={"hnsw:space": "cosine"},
+)
+
+@dataclass
+class Seed:
+    url: str
+    type: str  # "html" or "pdf"
+    title: str = ""
+    lang: str = "ja"
+    published_at: str = ""
+
+def _load_json_any(path: str) -> List[Dict]:
+    # BOM あり/なしをどちらも許容
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        return json.loads(raw.decode("utf-8-sig"))
+
+def load_seed(path: str) -> List[Seed]:
+    items = _load_json_any(path)
+    seeds: List[Seed] = []
+    for it in items:
+        if not it.get("url"):
+            continue
+        seeds.append(
+            Seed(
+                url=it["url"],
+                type=(it.get("type") or "html").lower(),
+                title=it.get("title", ""),
+                lang=it.get("lang", "ja"),
+                published_at=it.get("published_at", ""),
+            )
+        )
+    return seeds
+
+def clean_text(txt: str) -> str:
+    txt = re.sub(r"\r?\n+", "\n", txt)
+    txt = re.sub(r"[ \t]+", " ", txt)
+    return txt.strip()
+
+def fetch_html(url: str) -> str:
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    # 文量を優先して可視テキストを取得
+    for tag in soup(["script", "style", "noscript"]):
+        tag.extract()
+    text = soup.get_text(separator="\n")
+    return clean_text(text)
+
+def fetch_pdf(url: str) -> str:
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    with fitz.open(stream=r.content, filetype="pdf") as doc:
+        pages = [p.get_text("text") for p in doc]
+    return clean_text("\n".join(pages))
+
+def chunk(text: str, size: int = 800, overlap: int = 100) -> Iterable[str]:
+    if not text:
+        return []
+    tokens = text.split("\n")
+    cur: List[str] = []
+    total = 0
+    for line in tokens:
+        cur.append(line)
+        total += len(line)
+        if total >= size:
+            yield clean_text("\n".join(cur))
+            # overlap 分だけ残して次へ
+            keep = clean_text("\n".join(cur))[-overlap:]
+            cur = [keep] if keep else []
+            total = len(keep)
+    if cur:
+        yield clean_text("\n".join(cur))
+
+def upsert(url: str, title: str, chunks: List[str]):
+    if not chunks:
         return
+    ids = [f"{url}#chunk-{i}" for i in range(len(chunks))]
+    metas = [{"url": url, "title": title, "chunk_index": i} for i in range(len(chunks))]
+    collection.upsert(documents=chunks, ids=ids, metadatas=metas)
 
-    # ここに実際の取得→分割→埋め込み→upsert をつなぐ
-    # まずはURLメタだけを upsert するダミー実装（後で実体化）
-    payloads = []
+def run(seed_path: str):
+    seeds = load_seed(seed_path)
     for s in seeds:
-        payloads.append({
-            "doc_id": s["url"],
-            "chunks": [{"chunk_id": f"{s['url']}#0", "text": s["title"]}],
-            "meta": {"type": s["type"], "lang": s["lang"], "title": s["title"], "source": s["url"]},
-        })
-    upsert(payloads)
-    print(f"[ingest] upserted {len(payloads)} docs.")
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--seed", default=str(Path("v2/pipelines/config/seed_urls.json")))
-    args = ap.parse_args()
-    run(args.seed)
+        print(f"[INGEST] {s.type} -> {s.url}")
+        try:
+            if s.type == "pdf":
+                text = fetch_pdf(s.url)
+            else:
+                text = fetch_html(s.url)
+            parts = list(chunk(text))
+            upsert(s.url, s.title or s.url, parts)
+            print(f"  OK: {len(parts)} chunks")
+        except Exception as e:
+            print(f"  FAIL: {e}")
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", required=True, help="path to seed_urls.json")
+    args = parser.parse_args()
+
+    run(args.seed)
