@@ -1,138 +1,66 @@
-# v2/pipelines/ingest.py
+# v2/pipelines/ingest.py  完全版
 from __future__ import annotations
 
-import os
+import argparse
 import json
-import hashlib
-import datetime as dt
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List
 
-# import from local packages
-from app.store.vector import upsert
-from pipelines.extract import extract_from_pdf, extract_from_html
-
-# ====== Config ======
-ROOT_DIR = Path(os.getenv("V2_ROOT", Path(__file__).resolve().parents[1]))  # v2/
-DATA_DIR = Path(os.getenv("DATA_DIR", ROOT_DIR / "data"))
-SEED_PATH = Path(os.getenv("SEED_PATH", ROOT_DIR / "pipelines" / "config" / "seed_urls.json"))
-
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-# ====== Helpers ======
-def sha256_hex(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-def _read_text_no_bom(p: Path) -> str:
-    """
-    Windows/PowerShell で作られた JSON が UTF-8 BOM/CRLF の場合でも確実に読めるようにする。
-    """
-    # utf-8-sig で BOM を吸収、EOL は \n に正規化
-    txt = p.read_text(encoding="utf-8-sig")
-    return txt.replace("\r\n", "\n").replace("\r", "\n")
-
+# ---- seed の読み込み ---------------------------------------------------------
 def load_seed(path: Path) -> List[Dict[str, Any]]:
     """
-    seed_urls.json の読み込みとバリデーション/補完。
-    想定スキーマ:
-      - url: str (必須)
-      - type: "pdf"|"html" (任意: 拡張子で自動推定)
-      - title: str (任意)
-      - published_at: str (任意; YYYY-MM-DD など)
-      - lang: str (任意; 既定 "ja")
+    seed_urls.json を読み込み、list[dict] を返す。
+    - UTF-8 / UTF-8-SIG（BOM付き）どちらでもOK
+    - JSON 配列を想定
     """
     if not path.exists():
         raise FileNotFoundError(f"seed file not found: {path}")
 
-    raw = _read_text_no_bom(path)
+    # BOM を許容
+    text = path.read_text(encoding="utf-8-sig")
     try:
-        items = json.loads(raw)
+        data = json.loads(text)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in {path}: {e}") from e
+        # 失敗したとき、先頭数十文字を一緒に表示して原因特定しやすく
+        head = text[:120].replace("\n", "\\n")
+        raise ValueError(f"invalid JSON in seed file: {path} (head={head!r})") from e
 
-    if not isinstance(items, list):
-        raise ValueError("seed must be a JSON array")
+    if not isinstance(data, list):
+        raise TypeError(f"seed must be a JSON array, got {type(data).__name__}")
 
-    norm: List[Dict[str, Any]] = []
-    for i, row in enumerate(items, 1):
-        if not isinstance(row, dict):
-            print(f"[seed:{i}] skip (not an object)")
-            continue
+    # 必須キーの軽いチェック
+    for i, item in enumerate(data):
+        if not isinstance(item, dict) or "url" not in item:
+            raise ValueError(f"seed[{i}] must be an object with 'url' key, got: {item!r}")
+        # 補完（欠けていたら埋める）
+        item.setdefault("type", "html")
+        item.setdefault("title", "")
+        item.setdefault("published_at", "")
+        item.setdefault("lang", "ja")
+    return data
 
-        url = (row.get("url") or "").strip()
-        if not url:
-            print(f"[seed:{i}] skip (missing url)")
-            continue
+# ---- ダミー実装（ここに将来のクロール/埋め込み処理を載せる） -------------------
+def run(seed_path: Path) -> None:
+    seeds = load_seed(seed_path)
+    # とりあえず件数だけ表示
+    print(f"[ingest] loaded {len(seeds)} seeds from {seed_path}")
+    for s in seeds:
+        print(f" - {s['type']:4} | {s['url']}")
 
-        typ = (row.get("type") or "").lower().strip()
-        if typ not in {"pdf", "html"}:
-            # infer from url
-            typ = "pdf" if url.lower().endswith(".pdf") else "html"
+# ---- CLI ---------------------------------------------------------------------
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Ingest pipeline (v2)")
+    p.add_argument(
+        "--seed",
+        type=Path,
+        required=True,
+        help="path to seed_urls.json (e.g. v2/pipelines/config/seed_urls.json)",
+    )
+    return p.parse_args()
 
-        title = (row.get("title") or "").strip() or ("出典" if typ == "pdf" else "")
-        published_at = (row.get("published_at") or "").strip() or None
-        lang = (row.get("lang") or "ja").strip() or "ja"
-
-        norm.append({
-            "url": url,
-            "type": typ,
-            "title": title,
-            "published_at": published_at,
-            "lang": lang,
-        })
-    return norm
-
-def build_docs(seeds: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    extract_from_pdf / extract_from_html を使ってドキュメントを構築。
-    """
-    docs: List[Dict[str, Any]] = []
-    crawled_at = dt.datetime.utcnow().strftime("%Y-%m-%d")
-
-    for i, s in enumerate(seeds, 1):
-        url = s["url"]
-        typ = s["type"]
-        try:
-            if typ == "pdf":
-                text = extract_from_pdf(url)
-                title = s.get("title") or "出典"
-            else:
-                title, text = extract_from_html(url)
-        except Exception as e:
-            print(f"[{i}] extract error ({typ}): {url}\n  -> {e}")
-            continue
-
-        doc = {
-            "id": sha256_hex(url),
-            "text": (text or "")[:10000],  # 過大サイズ防止の暫定クリップ
-            "meta": {
-                "url": url,
-                "title": title or "",
-                "published_at": s.get("published_at"),
-                "crawled_at": crawled_at,
-                "lang": s.get("lang", "ja"),
-            },
-        }
-        docs.append(doc)
-    return docs
-
-# ====== Entry point ======
-def run() -> None:
-    print(f"[ingest] seed: {SEED_PATH}")
-    seeds = load_seed(SEED_PATH)
-    if not seeds:
-        print("[ingest] no seeds — nothing to do")
-        return
-
-    docs = build_docs(seeds)
-    if not docs:
-        print("[ingest] no docs extracted — nothing upserted")
-        return
-
-    upsert(docs)
-    print(f"[ingest] upserted: {len(docs)} docs")
+def main() -> None:
+    args = parse_args()
+    run(args.seed.resolve())
 
 if __name__ == "__main__":
-    # Windows で `python -m pipelines.ingest` 実行時に import が迷子にならないように保険
-    os.environ.setdefault("PYTHONPATH", str(ROOT_DIR))
-    run()
+    main()
