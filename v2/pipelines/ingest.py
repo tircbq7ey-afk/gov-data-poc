@@ -2,75 +2,47 @@
 from __future__ import annotations
 import argparse
 import json
-import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import List, Dict
 
-# v2 ディレクトリを PYTHONPATH に入れて実行する前提
-# 例: PS> $env:PYTHONPATH = (Get-Location).Path
-from app.store.vector import upsert  # your vector store upsert
-# upsert(items: List[Dict[str, Any]]) を想定。items は各ドキュメントメタデータの配列。
+from app.store.vector import upsert  # PYTHONPATH=repo_root を前提
 
-def load_seed(path: str | None = None) -> list[dict]:
-    import json, os
-    path = path or os.path.join(os.path.dirname(__file__), "config", "seed_urls.json")
-    # BOM付き/無しのどちらも受け付ける
-    with open(path, "r", encoding="utf-8-sig") as f:
+def load_seed(seed_path: Path) -> List[Dict]:
+    """
+    seed_urls.json を読み込む。UTF-8/BOM付きUTF-8 の両方に対応。
+    """
+    # Windows で作った JSON が BOM 付きでも読めるように utf-8-sig
+    with seed_path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
 
-def normalize(item: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    スキーマ正規化：
-    - 必須: url, type(html|pdf), title
-    - 任意: published_at, lang(default 'ja')
-    """
-    url = (item.get("url") or "").strip()
-    title = (item.get("title") or "").strip()
-    typ = (item.get("type") or "").strip().lower()
-    published_at = (item.get("published_at") or "").strip()
-    lang = (item.get("lang") or "ja").strip().lower()
+def run(seed: Path) -> None:
+    seeds = load_seed(seed)
 
-    if not url or not title:
-        raise ValueError(f"invalid seed item (url/title missing): {item}")
-    if typ not in ("html", "pdf"):
-        # URL から推定（簡易）
-        typ = "pdf" if url.lower().endswith(".pdf") else "html"
+    # 想定スキーマ: [{url, type, title, published_at, lang}]
+    docs = []
+    for s in seeds:
+        docs.append({
+            "url": s["url"],
+            "type": s.get("type", "html"),
+            "title": s.get("title", ""),
+            "published_at": s.get("published_at", ""),
+            "lang": s.get("lang", "ja"),
+        })
 
-    return {
-        "url": url,
-        "type": typ,
-        "title": title,
-        "published_at": published_at,
-        "lang": lang,
-    }
-
-def run(seed_path: Path) -> None:
-    seeds_raw = load_seed(seed_path)
-    items: List[Dict[str, Any]] = []
-    for idx, raw in enumerate(seeds_raw):
-        try:
-            items.append(normalize(raw))
-        except Exception as e:
-            print(f"[skip #{idx}] {e}", file=sys.stderr)
-
-    if not items:
-        print("no valid seeds, nothing to upsert.")
-        return
-
-    # ベクターストアへ投入（中でクロール/抽出までやる想定の upsert）
-    upsert(items)
-    print(f"ingest done: {len(items)} items")
+    # ベクタストアへ投入（実装は app/store/vector.py 側）
+    upsert(docs)
+    print(f"[ingest] upserted={len(docs)} from {seed}")
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--seed", type=str, required=True,
-                    help="path to seed_urls.json")
-    args = ap.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--seed", type=str, default="v2/pipelines/config/seed_urls.json")
+    args = p.parse_args()
+
     seed_path = Path(args.seed).resolve()
     if not seed_path.exists():
-        raise FileNotFoundError(seed_path)
+        raise FileNotFoundError(f"seed file not found: {seed_path}")
+
     run(seed_path)
 
 if __name__ == "__main__":
     main()
-
