@@ -1,66 +1,78 @@
-# v2/pipelines/ingest.py  完全版
+# v2/pipelines/ingest.py
 from __future__ import annotations
-
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-# ---- seed の読み込み ---------------------------------------------------------
+# v2 ディレクトリを PYTHONPATH に入れて実行する前提
+# 例: PS> $env:PYTHONPATH = (Get-Location).Path
+from app.store.vector import upsert  # your vector store upsert
+# upsert(items: List[Dict[str, Any]]) を想定。items は各ドキュメントメタデータの配列。
+
 def load_seed(path: Path) -> List[Dict[str, Any]]:
     """
-    seed_urls.json を読み込み、list[dict] を返す。
-    - UTF-8 / UTF-8-SIG（BOM付き）どちらでもOK
-    - JSON 配列を想定
+    seed_urls.json を読み込む。UTF-8 BOM を含む場合でも読み取れるよう utf-8-sig で開く。
     """
-    if not path.exists():
-        raise FileNotFoundError(f"seed file not found: {path}")
-
-    # BOM を許容
-    text = path.read_text(encoding="utf-8-sig")
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        # 失敗したとき、先頭数十文字を一緒に表示して原因特定しやすく
-        head = text[:120].replace("\n", "\\n")
-        raise ValueError(f"invalid JSON in seed file: {path} (head={head!r})") from e
-
+    with path.open("r", encoding="utf-8-sig") as f:
+        data = json.load(f)
     if not isinstance(data, list):
-        raise TypeError(f"seed must be a JSON array, got {type(data).__name__}")
-
-    # 必須キーの軽いチェック
-    for i, item in enumerate(data):
-        if not isinstance(item, dict) or "url" not in item:
-            raise ValueError(f"seed[{i}] must be an object with 'url' key, got: {item!r}")
-        # 補完（欠けていたら埋める）
-        item.setdefault("type", "html")
-        item.setdefault("title", "")
-        item.setdefault("published_at", "")
-        item.setdefault("lang", "ja")
+        raise ValueError("seed file must be a JSON array")
     return data
 
-# ---- ダミー実装（ここに将来のクロール/埋め込み処理を載せる） -------------------
+def normalize(item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    スキーマ正規化：
+    - 必須: url, type(html|pdf), title
+    - 任意: published_at, lang(default 'ja')
+    """
+    url = (item.get("url") or "").strip()
+    title = (item.get("title") or "").strip()
+    typ = (item.get("type") or "").strip().lower()
+    published_at = (item.get("published_at") or "").strip()
+    lang = (item.get("lang") or "ja").strip().lower()
+
+    if not url or not title:
+        raise ValueError(f"invalid seed item (url/title missing): {item}")
+    if typ not in ("html", "pdf"):
+        # URL から推定（簡易）
+        typ = "pdf" if url.lower().endswith(".pdf") else "html"
+
+    return {
+        "url": url,
+        "type": typ,
+        "title": title,
+        "published_at": published_at,
+        "lang": lang,
+    }
+
 def run(seed_path: Path) -> None:
-    seeds = load_seed(seed_path)
-    # とりあえず件数だけ表示
-    print(f"[ingest] loaded {len(seeds)} seeds from {seed_path}")
-    for s in seeds:
-        print(f" - {s['type']:4} | {s['url']}")
+    seeds_raw = load_seed(seed_path)
+    items: List[Dict[str, Any]] = []
+    for idx, raw in enumerate(seeds_raw):
+        try:
+            items.append(normalize(raw))
+        except Exception as e:
+            print(f"[skip #{idx}] {e}", file=sys.stderr)
 
-# ---- CLI ---------------------------------------------------------------------
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Ingest pipeline (v2)")
-    p.add_argument(
-        "--seed",
-        type=Path,
-        required=True,
-        help="path to seed_urls.json (e.g. v2/pipelines/config/seed_urls.json)",
-    )
-    return p.parse_args()
+    if not items:
+        print("no valid seeds, nothing to upsert.")
+        return
 
-def main() -> None:
-    args = parse_args()
-    run(args.seed.resolve())
+    # ベクターストアへ投入（中でクロール/抽出までやる想定の upsert）
+    upsert(items)
+    print(f"ingest done: {len(items)} items")
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--seed", type=str, required=True,
+                    help="path to seed_urls.json")
+    args = ap.parse_args()
+    seed_path = Path(args.seed).resolve()
+    if not seed_path.exists():
+        raise FileNotFoundError(seed_path)
+    run(seed_path)
 
 if __name__ == "__main__":
     main()
