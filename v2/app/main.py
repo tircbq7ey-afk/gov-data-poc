@@ -5,6 +5,8 @@ from .models.schema import SearchRequest, FeedbackRequest, SearchResponse
 from .service.search import handle as search_handle
 from .service.feedback import save as feedback_save
 from .util.metrics import track, p95
+from app.service.search import router as search_router
+APP.include_router(search_router)
 APP = FastAPI(title="VisaNavi API", version="0.1.0")
 APP.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 @APP.get("/health")
@@ -19,3 +21,4 @@ def search(req: SearchRequest):
 @APP.post("/feedback")
 def feedback(req: FeedbackRequest):
     return feedback_save(req)
+
