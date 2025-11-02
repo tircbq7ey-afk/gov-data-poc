@@ -1,0 +1,23 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gov-data-poc-app:prod
+    container_name: gov-data-poc-app
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Tokyo
+      # 必要に応じて API KEY や設定値をここへ
+      # - APP_API_KEY=changeme-local-token
+    ports:
+      - "8010:8010"   # 直接叩くとき用（curl の確認に便利）
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8010/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    volumes:
+      # 例: アプリのデータやインデックスを永続化したい場合
+      # - ./data:/app/data
+      # - ./indices:/app/indices

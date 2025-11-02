@@ -1,0 +1,11 @@
+.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+.env
+.env.*
+logs
+data/db/*.parquet
+node_modules
+dist
+tmp
