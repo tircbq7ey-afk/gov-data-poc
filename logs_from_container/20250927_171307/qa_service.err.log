@@ -1,4 +1,0 @@
-  File "C:\Users\yuji", line 1
-    [6A80:0D78][2025-09-19T06:03:33]i001: Burn v3.14.1.8722, Windows v10.0 (Build 26100: Service Pack 0), path: C:\WINDOWS\Temp\{4DCB124A-591A-442D-BCC1-67D055417632}\.cr\VC_redist.x64.exe
-     ^
-SyntaxError: invalid decimal literal

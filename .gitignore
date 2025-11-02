@@ -15,3 +15,11 @@ visa-subs-*.json
 
 # secrets
 visa-subs-*.json
+# v2 runtime
+v2/data/
+v2/.env
+# global
+.venv/
+__pycache__/
+*.log
+*.tmp
