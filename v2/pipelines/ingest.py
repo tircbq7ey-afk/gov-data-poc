@@ -1,102 +1,125 @@
-# v2/pipelines/ingest.py
+# -*- coding: utf-8 -*-
+"""
+RAG用インジェスト（Windows/PowerShellでもBOM混在を安全に読める版）
+- --seed でJSONの場所を指定（省略時は pipelines/config/seed_urls.json）
+- UTF-8 BOM/NoBOMのどちらでも読める
+- 実行ディレクトリに依存しない堅牢なパス解決
+"""
 from __future__ import annotations
-
+import os, sys, json, hashlib, datetime, logging
 from pathlib import Path
-import argparse
-import json
-from typing import List, Dict, Any
+from typing import Any, List, Dict, Tuple
 
-# 同一パッケージのextract / Vector Store を利用
-from . import extract
-from app.store import vector
+# ------- ログ設定 -------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+log = logging.getLogger("ingest")
 
+# ------- 依存モジュール -------
+from app.store.vector import upsert            # 既存のupsertを利用
+from pipelines.extract import (                # 既存の抽出関数を利用
+    extract_from_pdf, extract_from_html
+)
 
-# このファイルから見てプロジェクトルート(v2/)を指す
-ROOT = Path(__file__).resolve().parents[2]
+# ------- 定数 -------
+PROJECT_ROOT = Path(__file__).resolve().parents[1]     # <repo>/pipelines/ingest.py -> <repo>
+DEFAULT_SEED = PROJECT_ROOT / "pipelines" / "config" / "seed_urls.json"
+DATA_DIR = Path(os.getenv("DATA_DIR", PROJECT_ROOT / "data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# ------- ユーティリティ -------
+def sha(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
-def load_seed(path: Path) -> List[Dict[str, Any]]:
+def _read_json_bom_tolerant(p: Path) -> Any:
     """
-    seed_urls.json を読み込む。
-    - Windowsでよく混入する UTF-8 BOM を許容するため encoding='utf-8-sig' を使用
-    - 最低限のキー正規化（欠損はデフォルト値を補完）
-    返り値: [{"url": ..., "type": "pdf|html", "title": "...", "published_at": "...", "lang": "ja|en|..."}]
+    UTF-8 BOM/NoBOM を両方受け付ける安全なJSON読込。
     """
-    if not path.exists():
-        raise FileNotFoundError(f"seed file not found: {path}")
+    # まずバイナリで読み、BOMなら剥がしてからデコード
+    b = p.read_bytes()
+    if b.startswith(b"\xef\xbb\xbf"):  # UTF-8 BOM
+        text = b[len(b"\xef\xbb\xbf"):].decode("utf-8")
+    else:
+        # 通常UTF-8として解釈。万一decode失敗したら 'utf-8-sig' にフォールバック
+        try:
+            text = b.decode("utf-8")
+        except UnicodeDecodeError:
+            text = b.decode("utf-8-sig")
+    return json.loads(text)
 
-    with path.open("r", encoding="utf-8-sig") as f:
-        data = json.load(f)
+def _resolve_seed_path(seed_arg: str | None) -> Path:
+    """
+    seed_arg が相対/絶対/バックスラッシュ混在でも実体Pathに解決。
+    省略時は DEFAULT_SEED。
+    """
+    if not seed_arg:
+        return DEFAULT_SEED
 
-    if not isinstance(data, list):
-        raise ValueError("seed json must be a list of objects")
+    # 引用符を除去（PowerShellの `".\v2\..."` などを安全に）
+    s = seed_arg.strip().strip('"').strip("'")
+    p = Path(s)
 
-    normalized: List[Dict[str, Any]] = []
-    for i, it in enumerate(data):
-        if not isinstance(it, dict):
-            # 無視して続行
-            continue
-        url = (it.get("url") or "").strip()
-        if not url:
-            # url必須。無いものはスキップ
-            continue
+    # 実体化（相対なら現在位置基準 → 存在しなければプロジェクトルート基準を試す）
+    if p.exists():
+        return p.resolve()
 
-        t = (it.get("type") or "").strip().lower()
-        if t not in {"pdf", "html"}:
-            # URL拡張子から推定（デフォルトはhtml）
-            t = "pdf" if url.lower().endswith(".pdf") else "html"
+    # repoルート基準の再解決を試行
+    maybe = (PROJECT_ROOT / p).resolve()
+    if maybe.exists():
+        return maybe
 
-        normalized.append(
-            {
-                "url": url,
-                "type": t,
-                "title": it.get("title", "").strip(),
-                "published_at": it.get("published_at", "").strip(),
-                "lang": (it.get("lang") or "ja").strip(),
-            }
-        )
-    return normalized
+    raise FileNotFoundError(f"seed file not found: {s}\n"
+                            f"cwd={Path.cwd()}\n"
+                            f"tried: {p.resolve()} and {maybe}")
 
+def load_seed(seed_path: Path) -> List[Dict[str, Any]]:
+    log.info(f"loading seed: {seed_path}")
+    return _read_json_bom_tolerant(seed_path)
 
-def run(seed_file: Path) -> None:
-    seeds = load_seed(seed_file)
-    total_chunks = 0
+def run(seed: Path) -> None:
+    seeds = load_seed(seed)
+    docs: List[Dict[str, Any]] = []
+    crawled_at = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+
     for s in seeds:
-        # extract.build_docs は 1 seed dict -> List[Document] を想定
-        docs = extract.build_docs(s)
-        # VectorDB に upsert。返り値は書き込まれた chunk 数を想定
-        total_chunks += vector.upsert(docs)
+        typ = (s.get("type") or "").lower()
+        url = s["url"]
+        lang = s.get("lang", "ja")
 
-    print(f"ingest done: {len(seeds)} seeds, {total_chunks} chunks")
+        if typ == "pdf":
+            text = extract_from_pdf(url)
+            title = s.get("title") or "出典"
+        else:
+            title, text = extract_from_html(url)
 
+        doc_id = sha(url)
+        docs.append({
+            "id": doc_id,
+            "text": (text or "")[:10000],
+            "meta": {
+                "url": url,
+                "title": title,
+                "published_at": s.get("published_at"),
+                "crawled_at": crawled_at,
+                "lang": lang,
+            }
+        })
 
-def _resolve_seed_path(arg_seed: str) -> Path:
-    """
-    引数が相対パスの場合は v2/ を基準に解決。
-    絶対パス or v2/ から始まる文字列の両方に対応。
-    """
-    p = Path(arg_seed)
-    if p.is_absolute():
-        return p
-    # 既に v2/ 配下の表記（.\\v2\\... や v2/...）もそのまま通す
-    cand = (ROOT / p).resolve()
-    return cand
+    if not docs:
+        log.warning("no documents to upsert")
+        return
 
+    upsert(docs)
+    log.info(f"ingested: {len(docs)}")
 
+# ------- CLI -------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Seed ingest pipeline")
-    parser.add_argument(
-        "--seed",
-        type=str,
-        required=True,
-        help=r"Path to seed json (e.g. .\v2\pipelines\config\seed_urls.json)",
-    )
+    import argparse
+    parser = argparse.ArgumentParser(description="gov-docs ingest")
+    parser.add_argument("--seed", help="path to seed_urls.json (UTF-8 BOM/NoBOM both OK)", default=None)
     args = parser.parse_args()
 
-    try:
-        seed_path = _resolve_seed_path(args.seed)
-        run(seed_path)
-    except Exception as e:
-        # 例外はわかりやすく1行で表示（WindowsのPowerShellでも読みやすい）
-        print(f"[ingest:error] {type(e).__name__}: {e}")
-        raise
+    seed_path = _resolve_seed_path(args.seed)
+    run(seed_path)
