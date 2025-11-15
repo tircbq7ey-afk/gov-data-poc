@@ -1,101 +1,55 @@
-# pipelines/ingest.py
+# v2/pipelines/ingest.py
 from __future__ import annotations
-
 import argparse
 import json
 from pathlib import Path
-from typing import Any, List, Dict
+from typing import List, Dict, Any
 
-# ---- 設定 -------------------------------------------------------------
+DEFAULT_SEED = "pipelines/config/seed_urls.json"
 
-# デフォルトのseedファイル（このファイル = pipelines/ の直下基準）
-DEFAULT_SEED = Path(__file__).resolve().parent / "config" / "seed_urls.json"
+def load_seed(path: str | Path) -> List[Dict[str, Any]]:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"seed file not found: {p.resolve()}")
 
-# ---- ユーティリティ ----------------------------------------------------
+    raw = p.read_bytes()
+    # tolerate UTF-8 BOM (EF BB BF)
+    if raw[:3] == b"\xef\xbb\xbf":
+        raw = raw[3:]
 
-def resolve_seed_path(seed_arg: str | None) -> Path:
-    """
-    seed引数があれば最優先で解決。相対/絶対/スラ/バックスラ どれでもOK。
-    見つからない場合は pipelines/config/seed_urls.json を使う。
-    """
-    if seed_arg:
-        # \ / の混在を許し、~ 展開も許す
-        cand = Path(seed_arg.replace("\\", "/")).expanduser()
-        if cand.is_file():
-            return cand.resolve()
-
-        # CWD相対 → 失敗したら pipelines/ 相対も試す
-        cwd = Path.cwd()
-        if (cwd / cand).is_file():
-            return (cwd / cand).resolve()
-
-        base = Path(__file__).resolve().parent
-        if (base / cand).is_file():
-            return (base / cand).resolve()
-
-    return DEFAULT_SEED
-
-
-def load_seed(seed_path: Path) -> List[Dict[str, Any]]:
-    """
-    JSONをUTF-8（BOM付きも可）で読み込む。
-    Windows PowerShell 5.1の `Set-Content -Encoding utf8` はBOM付きになるため
-    ここでutf-8-sigで安全に吸収する。
-    """
-    if not seed_path.is_file():
-        raise FileNotFoundError(f"seed file not found: {seed_path}")
-
-    # ★ ここが恒久対策：utf-8-sig でBOMを許容
-    with seed_path.open("r", encoding="utf-8-sig") as f:
-        data = json.load(f)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise ValueError(f"failed to parse JSON: {p.resolve()}") from e
 
     if not isinstance(data, list):
-        raise ValueError("seed must be a list of objects")
+        raise ValueError("seed must be a JSON array")
 
-    # 最低限の正規化（keyの存在チェックなど必要に応じて）
     norm: List[Dict[str, Any]] = []
-    for i, row in enumerate(data, 1):
-        if not isinstance(row, dict):
-            raise ValueError(f"seed item #{i} is not an object")
-        # 必須候補: url / type
-        url = row.get("url")
-        typ = row.get("type", "")
-        if not url:
-            raise ValueError(f"seed item #{i} missing 'url'")
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"seed[{i}] must be an object")
+        # normalize keys (optional)
         norm.append({
-            "url": url,
-            "type": typ,
-            "title": row.get("title", ""),
-            "lang": row.get("lang", ""),
-            "published_at": row.get("published_at", ""),
+            "url": item.get("url", "").strip(),
+            "type": item.get("type", "").strip(),
+            "title": item.get("title", "").strip(),
+            "lang": item.get("lang", "").strip() or "ja",
+            "published_at": item.get("published_at", "").strip(),
         })
     return norm
 
-
-# ---- メイン処理（必要最低限のダミー実装） ------------------------------
-
-def run(seed_path: Path) -> None:
+def run(seed_path: str) -> None:
     seeds = load_seed(seed_path)
-    # ここで本来のインジェスト処理を呼ぶ。
-    # 取り急ぎ、読み込めたことが分かるようログだけ出す。
     print(f"[ingest] loaded {len(seeds)} seeds from {seed_path}")
-    for i, s in enumerate(seeds, 1):
-        print(f"  {i:02d}: {s['type']:>4}  {s['url']}")
-
+    for s in seeds:
+        print(f"  - {s['type']:4} | {s['url']}")
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="GovDocs ingest")
-    ap.add_argument(
-        "--seed",
-        help="Path to seed_urls.json (relative/absolute OK). "
-             "If omitted, use pipelines/config/seed_urls.json",
-        default=None,
-    )
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--seed", default=DEFAULT_SEED, help="path to seed_urls.json")
     args = ap.parse_args()
-
-    seed_path = resolve_seed_path(args.seed)
-    run(seed_path)
-
+    run(args.seed)
 
 if __name__ == "__main__":
     main()
