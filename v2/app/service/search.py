@@ -1,3 +1,4 @@
+# app/search.py
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from app.store import vector
@@ -10,7 +11,7 @@ class QueryReq(BaseModel):
 
 @router.get("/health")
 def health():
-    return {"status": "ok", "p95_ms": 0.0}
+    return {"status": "ok", "p95_ms": 0.0"}
 
 @router.post("/search")
 def search(req: QueryReq):
