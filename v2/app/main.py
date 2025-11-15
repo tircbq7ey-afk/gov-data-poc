@@ -1,13 +1,19 @@
 import time
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# 既存の Pydantic モデルを利用
 from .models.schema import SearchRequest, FeedbackRequest, SearchResponse
 from .service.feedback import save as feedback_save
 from .util.metrics import track, p95
 
-APP = FastAPI(title="VisaNavi API", version="0.1.0")
+logger = logging.getLogger(__name__)
 
+APP = FastAPI(title="VisaNavi API v2", version="0.2.0")
+
+# CORS はそのままフル開放で
 APP.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,32 +24,35 @@ APP.add_middleware(
 
 @APP.get("/health")
 def health():
-    """ヘルスチェック用のエンドポイント"""
+    """簡単な健康チェック"""
     return {"status": "ok", "p95_ms": p95()}
 
 
 @APP.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest):
     """
-    検索 API（とりあえず疎通確認用のダミー実装）
-    TODO: 後でベクターストア検索に差し替える
+    本番ロジックはまだ別途実装する前提で、
+    まずは API が動いてレスポンスが返る状態を作る。
     """
     t0 = time.time()
+    logger.info("search query=%r k=%s", req.query, getattr(req, "k", None))
 
-    # 最小限のダミー応答
+    # ★暫定実装：とりあえず query をオウム返しするだけ
+    answer = f"仮の検索APIです。query = '{req.query}' を受け取りました。"
+
     resp = SearchResponse(
-        answer="検索APIは疎通OKです（まだダミー実装）",
-        citations={},
+        answer=answer,
+        citations=[],   # まだベクター検索していないので空
         score=1.0,
     )
 
-    # レスポンスタイムを記録
-    track((time.time() - t0) * 1000)
+    # レイテンシ計測だけは動かしておく
+    track((time.time() - t0) * 1000.0)
     return resp
 
 
 @APP.post("/feedback")
 def feedback(req: FeedbackRequest):
-    """フィードバック保存用エンドポイント"""
+    """フィードバック保存は既存の実装を利用"""
     feedback_save(req)
     return {"status": "ok"}
