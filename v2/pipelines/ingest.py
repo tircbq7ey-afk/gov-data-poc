@@ -1,91 +1,149 @@
 # v2/pipelines/ingest.py
 from __future__ import annotations
-
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
-import codecs
+from typing import Any, Dict, List, Tuple
 
-DEFAULT_SEED = Path(__file__).parent / "config" / "seed_urls.json"
+# ---------- path helpers ----------
+HERE = Path(__file__).resolve().parent          # .../v2/pipelines
+V2_ROOT = HERE.parent                           # .../v2
+REPO_ROOT = V2_ROOT.parent                      # repo root
 
+DEFAULT_SEED = HERE / "config" / "seed_urls.json"
 
-def _read_json_tolerant(path: Path) -> Any:
+def resolve_path(p: str | Path) -> Path:
+    """Windowsでも安全に解決。相対なら
+    1) 現在dir, 2) v2/, 3) v2/pipelines/ から探索。"""
+    cand: List[Path] = []
+    ip = Path(p)
+    if ip.is_absolute():
+        cand.append(ip)
+    else:
+        cand += [
+            Path.cwd() / ip,
+            V2_ROOT / ip,
+            HERE / ip,
+        ]
+    for c in cand:
+        if c.exists():
+            return c.resolve()
+    # 見つからない場合は最初の候補を返す（上でエラー表示）
+    return cand[0] if cand else ip
+
+# ---------- robust JSON loader ----------
+def load_json_robust(path: Path) -> Any:
     """
-    UTF-8 / UTF-8-sig(BOM) の両方を許容して JSON を読み込む。
-    先頭に BOM があれば取り除いてからデコードする。
+    UTF-8 / UTF-8-SIG(BOM) のどちらでも読み込む。
+    先頭3バイトが BOM の場合は自動でスキップ。
     """
-    data = path.read_bytes()
-    if data.startswith(codecs.BOM_UTF8):
-        data = data[len(codecs.BOM_UTF8):]
-    # まず utf-8 を試し、ダメなら utf-8-sig でもう一度
+    # まずはバイナリで読み BOM を判定
+    raw = path.read_bytes()
+    # UTF-8 BOM
+    if raw.startswith(b"\xef\xbb\xbf"):
+        text = raw.decode("utf-8-sig")
+    else:
+        # 念のため utf-8 で
+        text = raw.decode("utf-8")
+    return json.loads(text)
+
+# ---------- ingestion core (best-effort) ----------
+def try_import_ingest_deps():
+    """
+    依存モジュール（スクレイプ & ベクタ格納）が存在する場合のみ使う。
+    なくてもエラーにしない（検証しやすくするため）。
+    """
+    extract = upsert = None
     try:
-        return json.loads(data.decode("utf-8"))
-    except json.JSONDecodeError:
-        return json.loads(data.decode("utf-8-sig"))
+        # 例: v2/pipelines/extract.py に fetch_and_split がある前提の軽結合
+        # あなたの実装に合わせてここだけ名称を変えてください
+        from pipelines.extract import fetch_and_split as extract  # type: ignore
+    except Exception:
+        pass
+    try:
+        from app.store.vector import upsert  # type: ignore
+    except Exception:
+        pass
+    return extract, upsert
 
-
-def _normalize_seeds(obj: Any) -> List[Dict[str, Any]]:
+def ingest(seeds: List[Dict[str, Any]]) -> Tuple[int, int]:
     """
-    seed が配列でも単一オブジェクトでも受け付ける。
+    seeds を処理。依存が見つからなければバリデーションのみ。
+    戻り値: (処理対象件数, upsert実行件数)
     """
-    if isinstance(obj, list):
-        return obj
-    if isinstance(obj, dict):
-        return [obj]
-    raise ValueError("seed file must be a JSON array or object")
+    extract, upsert = try_import_ingest_deps()
 
+    processed = 0
+    upserted = 0
 
-def load_seed(seed_path: Path) -> List[Dict[str, Any]]:
-    if not seed_path.exists():
-        raise FileNotFoundError(f"seed file not found: {seed_path}")
-    payload = _read_json_tolerant(seed_path)
-    seeds = _normalize_seeds(payload)
-    return seeds
-
-
-def run(seed: Path) -> None:
-    seeds = load_seed(seed)
-    print(f"[ingest] loaded {len(seeds)} seed(s) from: {seed.resolve()}")
-
-    # TODO: ここで実際の抽出・埋め込み・upsert を呼ぶ
-    # 例：
-    # from app.store.vector import upsert
-    # from pipelines.extract import fetch_and_parse
-    # for s in seeds:
-    #     docs = fetch_and_parse(s)
-    #     upsert(docs)
-
-    # ひとまず動作確認用に内容を出力
     for i, s in enumerate(seeds, 1):
-        title = s.get("title", "(no title)")
-        url = s.get("url", "(no url)")
-        print(f"  - [{i}] {title} <{url}>")
+        url = s.get("url") or s.get("URL") or s.get("link")
+        if not url:
+            print(f"[WARN] seed #{i} に url がありません。スキップ")
+            continue
+        lang = (s.get("lang") or "ja").lower()
+        typ = (s.get("type") or "html").lower()
+        title = s.get("title") or ""
+        meta = {"lang": lang, "type": typ, "title": title}
 
+        processed += 1
 
+        if extract and upsert:
+            try:
+                docs = extract(url, meta=meta)
+                if docs:
+                    upsert(docs)
+                    upserted += 1
+                    print(f"[OK] upsert: {url} ({len(docs)} docs)")
+                else:
+                    print(f"[OK] 解析は成功・ドキュメント0件: {url}")
+            except Exception as e:
+                print(f"[ERROR] ingest失敗: {url} :: {e}")
+        else:
+            # 依存がない場合は dry-run のように表示のみ
+            print(f"[DRY] {url}  lang={lang} type={typ} title={title}")
+
+    return processed, upserted
+
+# ---------- CLI ----------
 def main(argv: List[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Ingest pipeline (BOM tolerant)")
-    parser.add_argument(
+    p = argparse.ArgumentParser(description="VisaNavi v2: ingest seed urls")
+    p.add_argument(
         "--seed",
-        type=str,
         default=str(DEFAULT_SEED),
-        help="Path to seed_urls.json (relative or absolute)."
+        help="seed json path (UTF-8/UTF-8-SIG対応). 例: pipelines\\config\\seed_urls.json",
     )
-    args = parser.parse_args(argv)
+    args = p.parse_args(argv)
 
-    seed_path = Path(args.seed)
-    if not seed_path.is_absolute():
-        # 実行ディレクトリからの相対パスもサポート
-        seed_path = Path.cwd() / seed_path
+    seed_path = resolve_path(args.seed)
+
+    if not seed_path.exists():
+        # 探索ログを出しておく
+        print("[ERROR] seedファイルが見つかりません。探した場所:")
+        print(f" - {Path.cwd() / Path(args.seed)}")
+        print(f" - {V2_ROOT / Path(args.seed)}")
+        print(f" - {HERE / Path(args.seed)}")
+        print(f"最後に解決したパス: {seed_path}")
+        return 2
 
     try:
-        run(seed_path)
-        return 0
-    except Exception as e:
-        print(f"[ingest] ERROR: {e}", file=sys.stderr)
-        return 1
+        seeds = load_json_robust(seed_path)
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] JSONの読み込みに失敗しました（BOM含むUTF-8に対応済みだが内容が不正の可能性）。")
+        print(f"  ファイル: {seed_path}")
+        print(f"  詳細: {e}")
+        return 3
+
+    if not isinstance(seeds, list):
+        print(f"[ERROR] 期待した形式は配列(list)ですが、{type(seeds)} が読み込まれました。ファイル: {seed_path}")
+        return 4
+
+    print(f"[INFO] seeds 読み込み OK: {len(seeds)}件  ({seed_path})")
+    processed, upserted = ingest(seeds)
+    print(f"[DONE] processed={processed}, upserted={upserted}")
+    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
