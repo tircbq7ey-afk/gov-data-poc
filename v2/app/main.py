@@ -1,35 +1,12 @@
-import time
+# app/main.py
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from app.search import router as search_router
 
-from .models.schema import SearchRequest, FeedbackRequest, SearchResponse
-from .service.search import handle as search_handle, router as search_router
-from .service.feedback import save as feedback_save
-from .util.metrics import track, p95
+app = FastAPI(title="Gov Data API", version="2.0.0")
 
-APP = FastAPI(title="VisaNavi API", version="0.1.0")
+# ルーター登録
+app.include_router(search_router)
 
-APP.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-APP.include_router(search_router)
-
-@APP.get("/health")
-def health():
-    return {"status": "ok", "p95_ms": p95()}
-
-@APP.post("/search", response_model=SearchResponse)
-def search(req: SearchRequest):
-    t0 = time.time()
-    resp = search_handle(req)
-    track((time.time() - t0) * 1000)
-    return resp
-
-@APP.post("/feedback")
-def feedback(req: FeedbackRequest):
-    feedback_save(req)
-    return {"status": "ok"}
+@app.get("/")
+def root():
+    return {"message": "Gov Data API v2 running"}
