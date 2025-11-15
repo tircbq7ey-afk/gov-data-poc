@@ -1,97 +1,99 @@
-# v2/pipelines/ingest.py
+# pipelines/ingest.py
 from __future__ import annotations
 
 import argparse
 import json
-import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, List, Dict
 
-# （あなたの既存コードに合わせて必要ならコメントアウトを外してください）
-# from app.store.vector import upsert  # 既存のベクター登録関数
-# from pipelines.extract import fetch_and_extract  # 既存の抽出処理などがあれば
+# ---- 設定 -------------------------------------------------------------
 
-LOG = logging.getLogger("ingest")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-)
-
-# デフォルトの seed ファイル（このファイルと同じディレクトリの config/seed_urls.json）
+# デフォルトのseedファイル（このファイル = pipelines/ の直下基準）
 DEFAULT_SEED = Path(__file__).resolve().parent / "config" / "seed_urls.json"
 
+# ---- ユーティリティ ----------------------------------------------------
 
-def _load_json_tolerant(path: Path) -> Any:
+def resolve_seed_path(seed_arg: str | None) -> Path:
     """
-    UTF-8 / UTF-8-SIG(BOM付) の両方に耐性を持って JSON を読み込む。
-    - Windows/PowerShell で BOM 付きになっても落とさない。
+    seed引数があれば最優先で解決。相対/絶対/スラ/バックスラ どれでもOK。
+    見つからない場合は pipelines/config/seed_urls.json を使う。
     """
-    # まずバイナリで読んで BOM を吸収
-    raw = path.read_bytes()
-    try:
-        txt = raw.decode("utf-8")  # BOM 無し想定
-    except UnicodeDecodeError:
-        # BOM 付き（utf-8-sig）で再解釈
-        txt = raw.decode("utf-8-sig")
-    return json.loads(txt)
+    if seed_arg:
+        # \ / の混在を許し、~ 展開も許す
+        cand = Path(seed_arg.replace("\\", "/")).expanduser()
+        if cand.is_file():
+            return cand.resolve()
+
+        # CWD相対 → 失敗したら pipelines/ 相対も試す
+        cwd = Path.cwd()
+        if (cwd / cand).is_file():
+            return (cwd / cand).resolve()
+
+        base = Path(__file__).resolve().parent
+        if (base / cand).is_file():
+            return (base / cand).resolve()
+
+    return DEFAULT_SEED
 
 
 def load_seed(seed_path: Path) -> List[Dict[str, Any]]:
-    if not seed_path.exists():
+    """
+    JSONをUTF-8（BOM付きも可）で読み込む。
+    Windows PowerShell 5.1の `Set-Content -Encoding utf8` はBOM付きになるため
+    ここでutf-8-sigで安全に吸収する。
+    """
+    if not seed_path.is_file():
         raise FileNotFoundError(f"seed file not found: {seed_path}")
-    data = _load_json_tolerant(seed_path)
+
+    # ★ ここが恒久対策：utf-8-sig でBOMを許容
+    with seed_path.open("r", encoding="utf-8-sig") as f:
+        data = json.load(f)
+
     if not isinstance(data, list):
-        raise ValueError("seed must be a JSON array of objects")
-    # フィールド名のゆらぎや欠損に軽いバリデーションを入れておく
-    normed: List[Dict[str, Any]] = []
-    for i, item in enumerate(data):
-        if not isinstance(item, dict):
-            LOG.warning("seed[%d] is not an object: %r", i, item)
-            continue
-        url = item.get("url")
-        typ = item.get("type")
-        if not url or not typ:
-            LOG.warning("seed[%d] missing required fields: %r", i, item)
-            continue
-        normed.append(item)
-    return normed
+        raise ValueError("seed must be a list of objects")
+
+    # 最低限の正規化（keyの存在チェックなど必要に応じて）
+    norm: List[Dict[str, Any]] = []
+    for i, row in enumerate(data, 1):
+        if not isinstance(row, dict):
+            raise ValueError(f"seed item #{i} is not an object")
+        # 必須候補: url / type
+        url = row.get("url")
+        typ = row.get("type", "")
+        if not url:
+            raise ValueError(f"seed item #{i} missing 'url'")
+        norm.append({
+            "url": url,
+            "type": typ,
+            "title": row.get("title", ""),
+            "lang": row.get("lang", ""),
+            "published_at": row.get("published_at", ""),
+        })
+    return norm
 
 
-def run(seed_file: Path) -> None:
-    LOG.info("seed file: %s", seed_file)
-    seeds = load_seed(seed_file)
-    LOG.info("loaded %d seeds", len(seeds))
+# ---- メイン処理（必要最低限のダミー実装） ------------------------------
 
-    # --- ここから先はあなたの既存処理に接続してください ---
-    # 例：
-    # for s in seeds:
-    #     doc = fetch_and_extract(s["url"], doc_type=s["type"], lang=s.get("lang", "ja"))
-    #     upsert(doc)  # ベクターDBへ登録
-    # ---------------------------------------------------------
-
-    # とりあえず動作確認としてURL一覧をログに出す
-    for s in seeds:
-        LOG.info("seed: type=%s url=%s", s.get("type"), s.get("url"))
-
-    LOG.info("ingest finished.")
+def run(seed_path: Path) -> None:
+    seeds = load_seed(seed_path)
+    # ここで本来のインジェスト処理を呼ぶ。
+    # 取り急ぎ、読み込めたことが分かるようログだけ出す。
+    print(f"[ingest] loaded {len(seeds)} seeds from {seed_path}")
+    for i, s in enumerate(seeds, 1):
+        print(f"  {i:02d}: {s['type']:>4}  {s['url']}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Seeded ingest runner")
-    parser.add_argument(
+def main() -> None:
+    ap = argparse.ArgumentParser(description="GovDocs ingest")
+    ap.add_argument(
         "--seed",
-        type=str,
-        default=str(DEFAULT_SEED),
-        help="Path to seed_urls.json (default: v2/pipelines/config/seed_urls.json)",
+        help="Path to seed_urls.json (relative/absolute OK). "
+             "If omitted, use pipelines/config/seed_urls.json",
+        default=None,
     )
-    args = parser.parse_args()
+    args = ap.parse_args()
 
-    # 渡されたパスは実行ディレクトリに依存しないよう絶対パス化
-    seed_path = Path(args.seed).expanduser()
-    if not seed_path.is_absolute():
-        # 相対パスは「現在の作業ディレクトリ」基準で解決
-        seed_path = (Path.cwd() / seed_path).resolve()
-
+    seed_path = resolve_seed_path(args.seed)
     run(seed_path)
 
 
