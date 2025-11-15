@@ -1,53 +1,95 @@
 # v2/pipelines/ingest.py
-from __future__ import annotations
-import argparse, json, sys
-from pathlib import Path
 
-# --- 既存プロジェクト依存（存在しない環境でも動くように遅延 import）
-def _try_imports():
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+import codecs
+
+
+# --- 既存プロジェクト依存（無くても ingest 自体は動くようにする） ---
+def _try_imports() -> None:
     try:
-        # 例: ベクタ格納など（無い環境でも ingest 自体は動作させたい）
+        # 例：ベクタ格納など（実際の実装がまだでもここは OK）
         from app.store.vector import upsert  # noqa: F401
     except Exception:
+        # まだ実装していない／ローカルに無い環境でもスルー
         pass
 
-# --- UTF-8(BOM/無BOM) で JSON を安全に読む
+
+# --- UTF-8 (BOM あり/なし両方) を安全に読むユーティリティ ---
 def read_json(path: Path):
-    # utf-8-sig で BOM を自動吸収
-    with open(path, "r", encoding="utf-8-sig") as f:
-        return json.load(f)
+    # codec を使って、BOM があってもなくても確実に吸収する
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    if raw.startswith(codecs.BOM_UTF8):
+        raw = raw[len(codecs.BOM_UTF8) :]
+
+    text = raw.decode("utf-8")
+    return json.loads(text)
+
 
 def default_seed_path() -> Path:
-    # このファイルの隣の config/seed_urls.json を既定に
+    """
+    デフォルトの seed ファイルパス:
+    このファイル (ingest.py) の隣に config/seed_urls.json がある想定。
+    """
     here = Path(__file__).resolve()
     return (here.parent / "config" / "seed_urls.json").resolve()
 
+
 def load_seed(seed_path: str | None) -> list[dict]:
+    """
+    seed_urls.json を読み込み、list[dict] を返す。
+    - 相対パスでも OK（カレントディレクトリから解決）
+    - dict 形式でも、よくあるキー名から list を取り出す
+    """
     p = Path(seed_path).expanduser() if seed_path else default_seed_path()
+
     if not p.is_absolute():
-        # 実行場所に依存せず、プロジェクト root / v2 からの相対も解決
         p = (Path.cwd() / p).resolve()
+
     if not p.exists():
         raise FileNotFoundError(f"seed file not found: {p}")
+
     data = read_json(p)
-    if isinstance(data, dict):  # 配列でない形式にも耐性
-        data = (data.get("seeds") or data.get("items") or data.get("data") or [])
+
+    if isinstance(data, dict):
+        # {"seeds":[...]} / {"items":[...]} / {"data":[...]} のどれかを想定
+        data = data.get("seeds") or data.get("items") or data.get("data") or []
+
     if not isinstance(data, list):
         raise ValueError("seed file must be a list[dict]")
+
     return data
 
-def run(seed_path: str | None):
+
+def run(seed_path: str | None) -> None:
+    """
+    メイン処理。
+    ここではとりあえず件数を表示するだけにしておき、
+    実際のクロール・埋め込み処理はこの中で呼び出す想定。
+    """
     _try_imports()
     seeds = load_seed(seed_path)
-    # ここで実際の処理（クロール・埋め込み等）に渡す
-    # 既存実装があれば差し替えてください。ひとまず可視化のみ。
-    print(f"[ingest] {len(seeds)} items loaded")
 
-def cli(argv=None):
-    ap = argparse.ArgumentParser(description="VisaNavi ingest")
-    ap.add_argument("--seed", dest="seed", help="path to seed_urls.json (UTF-8/BOM both ok)")
-    args = ap.parse_args(argv)
+    # TODO: ここで実際のクロール・ベクタ登録処理に seeds を渡す
+    print(f"[ingest] {len(seeds)} items loaded from seed file")
+
+
+def cli(argv=None) -> None:
+    parser = argparse.ArgumentParser(description="VisaNavi ingest")
+    parser.add_argument(
+        "--seed",
+        dest="seed",
+        help="path to seed_urls.json (UTF-8 / UTF-8 with BOM both ok)",
+    )
+    args = parser.parse_args(argv)
     run(args.seed)
+
 
 if __name__ == "__main__":
     cli(sys.argv[1:])
