@@ -1,125 +1,93 @@
-# -*- coding: utf-8 -*-
-"""
-RAG用インジェスト（Windows/PowerShellでもBOM混在を安全に読める版）
-- --seed でJSONの場所を指定（省略時は pipelines/config/seed_urls.json）
-- UTF-8 BOM/NoBOMのどちらでも読める
-- 実行ディレクトリに依存しない堅牢なパス解決
-"""
 from __future__ import annotations
-import os, sys, json, hashlib, datetime, logging
+
+import argparse
+import json
 from pathlib import Path
-from typing import Any, List, Dict, Tuple
+from typing import Dict, List
 
-# ------- ログ設定 -------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-log = logging.getLogger("ingest")
+from . import extract
+from app.store import vector
 
-# ------- 依存モジュール -------
-from app.store.vector import upsert            # 既存のupsertを利用
-from pipelines.extract import (                # 既存の抽出関数を利用
-    extract_from_pdf, extract_from_html
-)
 
-# ------- 定数 -------
-PROJECT_ROOT = Path(__file__).resolve().parents[1]     # <repo>/pipelines/ingest.py -> <repo>
-DEFAULT_SEED = PROJECT_ROOT / "pipelines" / "config" / "seed_urls.json"
-DATA_DIR = Path(os.getenv("DATA_DIR", PROJECT_ROOT / "data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-# ------- ユーティリティ -------
-def sha(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-def _read_json_bom_tolerant(p: Path) -> Any:
+def _resolve_seed_path(seed_arg: str) -> Path:
     """
-    UTF-8 BOM/NoBOM を両方受け付ける安全なJSON読込。
+    Resolve --seed path robustly.
+
+    Accepts:
+      - absolute path
+      - relative to current working directory
+      - project-root relative paths such as "v2/pipelines/config/seed_urls.json"
+      - Windows style backslashes
     """
-    # まずバイナリで読み、BOMなら剥がしてからデコード
-    b = p.read_bytes()
-    if b.startswith(b"\xef\xbb\xbf"):  # UTF-8 BOM
-        text = b[len(b"\xef\xbb\xbf"):].decode("utf-8")
-    else:
-        # 通常UTF-8として解釈。万一decode失敗したら 'utf-8-sig' にフォールバック
-        try:
-            text = b.decode("utf-8")
-        except UnicodeDecodeError:
-            text = b.decode("utf-8-sig")
-    return json.loads(text)
+    cand = Path(seed_arg).expanduser()
+    if cand.is_absolute() and cand.exists():
+        return cand
 
-def _resolve_seed_path(seed_arg: str | None) -> Path:
+    # try relative to CWD
+    cand2 = (Path.cwd() / cand).resolve()
+    if cand2.exists():
+        return cand2
+
+    # try project root (two parents up from this file: v2/pipelines/ingest.py -> repo root)
+    project_root = Path(__file__).resolve().parents[2]
+    cand3 = (project_root / cand).resolve()
+    if cand3.exists():
+        return cand3
+
+    # as a last resort, try removing leading "v2/" if present
+    if str(cand).startswith(("v2/", "v2\\")):
+        cand4 = (project_root / str(cand).split("\\", 1)[-1].split("/", 1)[-1]).resolve()
+        if cand4.exists():
+            return cand4
+
+    raise FileNotFoundError(f"seed file not found: {seed_arg}")
+
+
+def load_seed(path: Path) -> List[Dict]:
     """
-    seed_arg が相対/絶対/バックスラッシュ混在でも実体Pathに解決。
-    省略時は DEFAULT_SEED。
+    Load seed_urls.json and normalize items.
+
+    - Reads with encoding='utf-8-sig' to tolerate UTF-8 BOM (Windows PowerShell writes BOM by default).
+    - Validates minimal required fields.
     """
-    if not seed_arg:
-        return DEFAULT_SEED
+    with path.open("r", encoding="utf-8-sig") as f:
+        data = json.load(f)
 
-    # 引用符を除去（PowerShellの `".\v2\..."` などを安全に）
-    s = seed_arg.strip().strip('"').strip("'")
-    p = Path(s)
-
-    # 実体化（相対なら現在位置基準 → 存在しなければプロジェクトルート基準を試す）
-    if p.exists():
-        return p.resolve()
-
-    # repoルート基準の再解決を試行
-    maybe = (PROJECT_ROOT / p).resolve()
-    if maybe.exists():
-        return maybe
-
-    raise FileNotFoundError(f"seed file not found: {s}\n"
-                            f"cwd={Path.cwd()}\n"
-                            f"tried: {p.resolve()} and {maybe}")
-
-def load_seed(seed_path: Path) -> List[Dict[str, Any]]:
-    log.info(f"loading seed: {seed_path}")
-    return _read_json_bom_tolerant(seed_path)
-
-def run(seed: Path) -> None:
-    seeds = load_seed(seed)
-    docs: List[Dict[str, Any]] = []
-    crawled_at = datetime.datetime.utcnow().strftime("%Y-%m-%d")
-
-    for s in seeds:
-        typ = (s.get("type") or "").lower()
-        url = s["url"]
-        lang = s.get("lang", "ja")
-
-        if typ == "pdf":
-            text = extract_from_pdf(url)
-            title = s.get("title") or "出典"
-        else:
-            title, text = extract_from_html(url)
-
-        doc_id = sha(url)
-        docs.append({
-            "id": doc_id,
-            "text": (text or "")[:10000],
-            "meta": {
+    norm: List[Dict] = []
+    for it in data:
+        url = (it or {}).get("url", "").strip()
+        if not url:
+            continue
+        norm.append(
+            {
                 "url": url,
-                "title": title,
-                "published_at": s.get("published_at"),
-                "crawled_at": crawled_at,
-                "lang": lang,
+                "type": it.get("type", "html"),
+                "title": it.get("title", ""),
+                "published_at": it.get("published_at", ""),
+                "lang": it.get("lang", "ja"),
             }
-        })
+        )
+    if not norm:
+        raise ValueError("seed list is empty after normalization")
+    return norm
 
-    if not docs:
-        log.warning("no documents to upsert")
-        return
 
-    upsert(docs)
-    log.info(f"ingested: {len(docs)}")
+def run(seed_file: Path) -> None:
+    seeds = load_seed(seed_file)
+    total_chunks = 0
+    for s in seeds:
+        docs = extract.build_docs(s)
+        total_chunks += vector.upsert(docs)
+    print(f"ingest done: {len(seeds)} seeds, {total_chunks} chunks")
 
-# ------- CLI -------
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="gov-docs ingest")
-    parser.add_argument("--seed", help="path to seed_urls.json (UTF-8 BOM/NoBOM both OK)", default=None)
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="RAG ingest pipeline")
+    parser.add_argument("--seed", required=True, help="path to seed_urls.json")
     args = parser.parse_args()
-
     seed_path = _resolve_seed_path(args.seed)
     run(seed_path)
+
+
+if __name__ == "__main__":
+    main()
