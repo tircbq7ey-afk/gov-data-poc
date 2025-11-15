@@ -2,12 +2,8 @@
 import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .models.schema import SearchRequest, FeedbackRequest, SearchResponse
-from .service.search import handle as search_handle, router as search_router
-from .service.feedback import save as feedback_save
-from .util.metrics import track, p95
 
-# ← すべて相対インポートに統一
+# すべて相対インポートに統一
 from .models.schema import SearchRequest, FeedbackRequest, SearchResponse
 from .service.search import handle as search_handle, router as search_router
 from .service.feedback import save as feedback_save
@@ -22,7 +18,7 @@ APP.add_middleware(
     allow_headers=["*"],
 )
 
-# ルーターを登録（/search エンドポイント群）
+# ルータ登録はAPP生成後に
 APP.include_router(search_router)
 
 @APP.get("/health")
@@ -39,4 +35,3 @@ def search(req: SearchRequest):
 @APP.post("/feedback")
 def feedback(req: FeedbackRequest):
     return feedback_save(req)
-
