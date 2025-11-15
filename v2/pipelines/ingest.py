@@ -1,95 +1,103 @@
-# v2/pipelines/ingest.py
-
-from __future__ import annotations
-
 import argparse
+import datetime
 import json
-import sys
+import logging
 from pathlib import Path
-import codecs
+from typing import Any, Dict, List, Optional
+
+from .extract import extract_from_pdf, extract_from_html
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_SEED_PATH = ROOT_DIR / "pipelines" / "config" / "seed_urls.json"
+STORE_DIR = ROOT_DIR / "store"
+STORE_DIR.mkdir(parents=True, exist_ok=True)
+DOC_PATH = STORE_DIR / "documents.jsonl"
 
 
-# --- 既存プロジェクト依存（無くても ingest 自体は動くようにする） ---
-def _try_imports() -> None:
-    try:
-        # 例：ベクタ格納など（実際の実装がまだでもここは OK）
-        from app.store.vector import upsert  # noqa: F401
-    except Exception:
-        # まだ実装していない／ローカルに無い環境でもスルー
-        pass
+def load_seed(path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """シードURL(JSON)を読み込む。UTF-8 / UTF-8 BOM 両対応。"""
+    seed_file = Path(path) if path else DEFAULT_SEED_PATH
+    logger.info("Loading seeds from %s", seed_file)
+
+    # UTF-8 / UTF-8-SIG どちらでも読めるようにする
+    for enc in ("utf-8-sig", "utf-8"):
+        try:
+            with seed_file.open("r", encoding=enc) as f:
+                data = json.load(f)
+            logger.info("Loaded %d seeds using encoding=%s", len(data), enc)
+            return data
+        except UnicodeError:
+            continue
+
+    raise RuntimeError(f"Failed to read seed file as UTF-8: {seed_file}")
 
 
-# --- UTF-8 (BOM あり/なし両方) を安全に読むユーティリティ ---
-def read_json(path: Path):
-    # codec を使って、BOM があってもなくても確実に吸収する
-    with open(path, "rb") as f:
-        raw = f.read()
-
-    if raw.startswith(codecs.BOM_UTF8):
-        raw = raw[len(codecs.BOM_UTF8) :]
-
-    text = raw.decode("utf-8")
-    return json.loads(text)
+def append_doc(doc: Dict[str, Any]) -> None:
+    """1 ドキュメントを JSONL に追記保存する。"""
+    with DOC_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(doc, ensure_ascii=False) + "\n")
 
 
-def default_seed_path() -> Path:
-    """
-    デフォルトの seed ファイルパス:
-    このファイル (ingest.py) の隣に config/seed_urls.json がある想定。
-    """
-    here = Path(__file__).resolve()
-    return (here.parent / "config" / "seed_urls.json").resolve()
+def run(seeds_path: Optional[str] = None) -> None:
+    seeds = load_seed(seeds_path)
 
+    for idx, s in enumerate(seeds, start=1):
+        url = s.get("url")
+        doc_type = s.get("type")
+        lang = s.get("lang", "ja")
+        title = s.get("title", url)
 
-def load_seed(seed_path: str | None) -> list[dict]:
-    """
-    seed_urls.json を読み込み、list[dict] を返す。
-    - 相対パスでも OK（カレントディレクトリから解決）
-    - dict 形式でも、よくあるキー名から list を取り出す
-    """
-    p = Path(seed_path).expanduser() if seed_path else default_seed_path()
+        logger.info("[%d/%d] processing %s (%s)", idx, len(seeds), url, doc_type)
 
-    if not p.is_absolute():
-        p = (Path.cwd() / p).resolve()
+        try:
+            if doc_type == "pdf":
+                try:
+                    text = extract_from_pdf(url)
+                except Exception as e:
+                    logger.error("PDF extract failed for %s: %s", url, e)
+                    # 壊れたPDFはスキップ
+                    continue
+            elif doc_type == "html":
+                try:
+                    text = extract_from_html(url)
+                except Exception as e:
+                    logger.error("HTML extract failed for %s: %s", url, e)
+                    continue
+            else:
+                logger.warning("Unknown type '%s' for %s, skip", doc_type, url)
+                continue
 
-    if not p.exists():
-        raise FileNotFoundError(f"seed file not found: {p}")
+            if not text:
+                logger.warning("Empty text extracted from %s, skip", url)
+                continue
 
-    data = read_json(p)
+            crawled_at = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            doc = {
+                "url": url,
+                "lang": lang,
+                "title": title,
+                "text": text,
+                "crawled_at": crawled_at,
+            }
+            append_doc(doc)
+            logger.info("Saved document for %s", url)
 
-    if isinstance(data, dict):
-        # {"seeds":[...]} / {"items":[...]} / {"data":[...]} のどれかを想定
-        data = data.get("seeds") or data.get("items") or data.get("data") or []
+        except Exception as e:
+            logger.exception("Unexpected error while processing %s: %s", url, e)
 
-    if not isinstance(data, list):
-        raise ValueError("seed file must be a list[dict]")
-
-    return data
-
-
-def run(seed_path: str | None) -> None:
-    """
-    メイン処理。
-    ここではとりあえず件数を表示するだけにしておき、
-    実際のクロール・埋め込み処理はこの中で呼び出す想定。
-    """
-    _try_imports()
-    seeds = load_seed(seed_path)
-
-    # TODO: ここで実際のクロール・ベクタ登録処理に seeds を渡す
-    print(f"[ingest] {len(seeds)} items loaded from seed file")
-
-
-def cli(argv=None) -> None:
-    parser = argparse.ArgumentParser(description="VisaNavi ingest")
-    parser.add_argument(
-        "--seed",
-        dest="seed",
-        help="path to seed_urls.json (UTF-8 / UTF-8 with BOM both ok)",
-    )
-    args = parser.parse_args(argv)
-    run(args.seed)
+    logger.info("Ingest finished. Output: %s", DOC_PATH)
 
 
 if __name__ == "__main__":
-    cli(sys.argv[1:])
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--seed",
+        type=str,
+        default=None,
+        help="Path to seed_urls.json (optional).",
+    )
+    args = parser.parse_args()
+    run(args.seed)
