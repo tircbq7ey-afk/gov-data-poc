@@ -1,24 +1,30 @@
-# app/main.py
-
-import time
+# v2/app/main.py
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
-from service.search import handle as search_handle
+from app.models.schema import SearchRequest, FeedbackRequest
+from app.service.search import handle as search_handle
+from app.service.feedback import handle as feedback_handle
 
-APP = FastAPI(title="VisaNavi API", version="0.1.0")
+APP = FastAPI()
 
-APP.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 @APP.get("/health")
-def health():
+async def health():
     return {"status": "ok"}
 
-# /search エンドポイントを有効化
-APP.include_router(search_router)
 
+@APP.post("/search")
+async def search(req: SearchRequest):
+    """
+    ベクタ検索 API。
+    戻り値は service.search.handle の JSON をそのまま返します。
+    """
+    return search_handle(req)
+
+
+@APP.post("/feedback")
+async def feedback(req: FeedbackRequest):
+    """
+    フィードバック API（こちらは従来通りで OK）。
+    """
+    return feedback_handle(req)
