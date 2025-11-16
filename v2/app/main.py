@@ -4,8 +4,7 @@ import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# ★ 相対インポートで router だけ読み込む
-from .service.search import router as search_router
+from service.search import handle as search_handle
 
 APP = FastAPI(title="VisaNavi API", version="0.1.0")
 
@@ -22,3 +21,4 @@ def health():
 
 # /search エンドポイントを有効化
 APP.include_router(search_router)
+
