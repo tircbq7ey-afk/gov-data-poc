@@ -1,27 +1,22 @@
-# app/search.py
+# app/service/search.py
+
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
-from app.store import vector
 
-router = APIRouter()
+from ..models.schema import SearchRequest, SearchResponse
+from ..store.vector import search_documents
 
-class QueryReq(BaseModel):
-    query: str = Field(..., description="ユーザー質問")
-    k: int = Field(5, ge=1, le=20, description="取得件数")
+# /search 配下のAPIをまとめるルーター
+router = APIRouter(prefix="/search", tags=["search"])
 
-@router.get("/health")
-def health():
-    return {"status": "ok", "p95_ms": 0.0"}
 
-@router.post("/search")
-def search(req: QueryReq):
-    hits = vector.query(req.query, k=req.k)
-    if not hits:
-        return {"answer": "", "citations": [], "score": 0.0}
-    top = hits[0]
-    citations = [{
-        "url": h["url"],
-        "title": h["title"],
-        "chunk_index": h["chunk_index"]
-    } for h in hits]
-    return {"answer": top["text"], "citations": citations, "score": top["score"]}
+@router.post("/", response_model=SearchResponse)
+def search(req: SearchRequest) -> SearchResponse:
+    """
+    ベクターストアからクエリ検索して結果を返すエンドポイント
+    """
+    results = search_documents(req.query, k=req.k)
+
+    return SearchResponse(
+        query=req.query,
+        results=results,
+    )
