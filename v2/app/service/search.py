@@ -1,51 +1,56 @@
-import logging
-from typing import Dict, Any
+# v2/app/service/search.py
+from typing import Any, Dict, List
+
 from app.store.vector import get_vector_store
 
-logger = logging.getLogger(__name__)
 
-def handle(req: Dict[str, Any]) -> Dict[str, Any]:
+def handle(req) -> Dict[str, Any]:
     """
-    Search handler.
-    Expected request body:
-      {
-        "query": "在留カード 住所 変更",
-        "k": 5
-      }
+    検索 API のビジネスロジック。
+    例外が出ても 500 にはせず、{"error": "..."} を返します。
     """
+    # FastAPI のモデル/SearchRequest でも、生の dict でも動くようにしておく
+    try:
+        query = req.query if hasattr(req, "query") else req["query"]
+        k = req.k if hasattr(req, "k") else req.get("k", 5)
+    except Exception as e:
+        return {"error": f"invalid request: {e}"}
 
     try:
-        query: str = req.get("query", "")
-        k: int = req.get("k", 5)
-
-        if not query:
-            return {"error": "query is required"}
-
         collection = get_vector_store()
 
-        # NOTE: Chroma の検索は search ではなく query
-        results = collection.query(
+        result = collection.query(
             query_texts=[query],
-            n_results=k
+            n_results=int(k),
+            include=["documents", "metadatas", "distances", "ids"],
         )
 
-        # Chroma のレスポンス形式に合わせて整形
-        output = []
-        ids = results.get("ids", [[]])[0]
-        docs = results.get("documents", [[]])[0]
-        distances = results.get("distances", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
+        docs: List[str] = (result.get("documents") or [[]])[0]
+        metadatas: List[Dict[str, Any]] = (result.get("metadatas") or [[]])[0]
+        ids: List[str] = (result.get("ids") or [[]])[0]
+        scores: List[float] = (result.get("distances") or [[]])[0]
 
-        for doc_id, doc, dist, meta in zip(ids, docs, distances, metadatas):
-            output.append({
-                "id": doc_id,
-                "text": doc,
-                "distance": dist,
-                "metadata": meta
-            })
+        items: List[Dict[str, Any]] = []
+        for doc, meta, _id, score in zip(docs, metadatas, ids, scores):
+            source_url = None
+            title = None
+            if isinstance(meta, dict):
+                source_url = meta.get("url") or meta.get("source_url")
+                title = meta.get("title")
 
-        return {"results": output}
+            items.append(
+                {
+                    "id": _id,
+                    "title": title,
+                    "source_url": source_url,
+                    "text": doc,
+                    "score": float(score) if score is not None else None,
+                }
+            )
+
+        return {"results": items}
 
     except Exception as e:
-        logger.exception("Search failed")
+        # ここで print しておくと、ターミナルに詳細が出ます
+        print("Search error:", repr(e))
         return {"error": str(e)}
